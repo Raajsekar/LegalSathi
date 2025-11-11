@@ -126,5 +126,7 @@ def whatsapp_reply():
 
 # ================== RUN FLASK SERVER ==================
 if __name__ == "__main__":
-    print("🚀 LegalSathi WhatsApp Bot is running on http://127.0.0.1:5000/whatsapp")
-    app.run(port=5000)
+    port = int(os.environ.get("PORT", 10000))
+    print(f"🚀 LegalSathi WhatsApp Bot is running on 0.0.0.0:{port}/whatsapp")
+    app.run(host="0.0.0.0", port=port)
+
