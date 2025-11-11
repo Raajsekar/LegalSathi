@@ -1,59 +1,45 @@
+# =====================================
+# ✅ LegalSathi WhatsApp Bot — Final Version
+# =====================================
+
 from flask import Flask, request, Response, send_file
 from twilio.twiml.messaging_response import MessagingResponse
 from groq import Groq
-import os
+import os, time
 from dotenv import load_dotenv
 from pdf_utils import text_to_pdf
-import time
 
-# Load environment variables
 load_dotenv()
 
-# Initialize Flask app
 app = Flask(__name__)
-
-# Initialize Groq client
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-# ================== AI HELPER FUNCTION ==================
-def ask_ai(context, user_input):
+# Store user chat stage in memory
+user_state = {}
+
+# =============== AI HELPER FUNCTION ===============
+def ask_ai(context, prompt):
     try:
-        prompt = f"{context}\n\nUser request:\n{user_input}"
         completion = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
-                {"role": "system", "content": "You are LegalSathi, an Indian AI legal assistant. Provide clear, lawful, and professional responses in Indian context."},
-                {"role": "user", "content": prompt}
-            ]
+                {
+                    "role": "system",
+                    "content": (
+                        "You are LegalSathi, an Indian AI legal assistant. "
+                        "Provide clear, lawful, and helpful responses in the Indian legal context."
+                    ),
+                },
+                {"role": "user", "content": f"{context}\n{prompt}"},
+            ],
         )
         return completion.choices[0].message.content.strip()
     except Exception as e:
         print("Groq Error:", e)
         return "⚠️ Sorry, I couldn’t process that right now. Please try again later."
 
-# ================== USER CONTEXT STORAGE ==================
-# (In production, replace this with Redis or a database)
-user_state = {}
 
-# ================== HOME ROUTE ==================
-@app.route("/")
-def home():
-    return """
-    <html>
-        <head><title>LegalSathi - AI Legal Assistant</title></head>
-        <body style="font-family: Arial; text-align: center; margin-top: 100px;">
-            <h1>⚖️ LegalSathi</h1>
-            <p>Your AI-powered Indian legal assistant, available 24/7 on WhatsApp.</p>
-            <p>WhatsApp us at <b>+1 XXX XXX XXXX</b> (Twilio Sandbox)</p>
-            <p><i>Summarize, draft, or explain legal content instantly.</i></p>
-        </body>
-    </html>
-    """
-
-# ================== WHATSAPP WEBHOOK ==================
-# Global memory to track user state
-user_state = {}
-
+# =============== MAIN WHATSAPP ROUTE ===============
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
     incoming_msg = request.values.get("Body", "").strip()
@@ -62,9 +48,9 @@ def whatsapp_reply():
 
     twilio_resp = MessagingResponse()
 
-    # === 🟢 1️⃣ FIRST MESSAGE (new user or session expired) ===
+    # === 1️⃣ Auto Menu for First-Time Users ===
     if sender not in user_state:
-        user_state[sender] = {"stage": "menu"}  # start fresh
+        user_state[sender] = {"stage": "menu"}
         menu = (
             "👋 *Welcome to LegalSathi!*\n\n"
             "Please choose what you’d like to do:\n"
@@ -76,8 +62,8 @@ def whatsapp_reply():
         twilio_resp.message(menu)
         return Response(str(twilio_resp), mimetype="application/xml")
 
-    # === 2️⃣ Handle 'hi', 'menu', 'start' ===
-    if incoming_msg.lower() in ["hi", "hello", "menu", "start"]:
+    # === 2️⃣ Reset menu when user types "hi" or "menu" ===
+    if incoming_msg.lower() in ["hi", "hello", "menu", "start", "restart"]:
         user_state[sender]["stage"] = "menu"
         menu = (
             "⚖️ *Welcome back to LegalSathi!*\n\n"
@@ -89,7 +75,7 @@ def whatsapp_reply():
         twilio_resp.message(menu)
         return Response(str(twilio_resp), mimetype="application/xml")
 
-    # === 3️⃣ Handle menu choices ===
+    # === 3️⃣ Handle Menu Selection ===
     if user_state[sender]["stage"] == "menu":
         if incoming_msg == "1":
             user_state[sender]["stage"] = "summarize"
@@ -101,42 +87,55 @@ def whatsapp_reply():
             return Response(str(twilio_resp), mimetype="application/xml")
         elif incoming_msg == "3":
             user_state[sender]["stage"] = "explain"
-            twilio_resp.message("📘 Please paste the *clause or document* you want explained.")
+            twilio_resp.message("📘 Please paste the *clause or legal text* you want explained.")
             return Response(str(twilio_resp), mimetype="application/xml")
         else:
-            twilio_resp.message("⚠️ Invalid option. Reply with 1, 2, or 3.")
+            twilio_resp.message("⚠️ Invalid option. Please reply with 1, 2, or 3.")
             return Response(str(twilio_resp), mimetype="application/xml")
 
-    # === 4️⃣ Handle AI actions ===
+    # === 4️⃣ Handle Active Task (Summarize / Contract / Explain) ===
     stage = user_state[sender]["stage"]
     if stage in ["summarize", "contract", "explain"]:
         if stage == "summarize":
-            ai_reply = ask_ai("Summarize this legal document in simple, clear Indian English:", incoming_msg)
+            ai_reply = ask_ai("Summarize this legal document in clear Indian English:", incoming_msg)
         elif stage == "contract":
-            ai_reply = ask_ai("Create a professional Indian legal contract for this request:", incoming_msg)
+            ai_reply = ask_ai("Draft a professional Indian legal contract for this request:", incoming_msg)
         elif stage == "explain":
-            ai_reply = ask_ai("Explain this legal clause in plain Indian legal language:", incoming_msg)
+            ai_reply = ask_ai("Explain this legal clause in simple Indian language:", incoming_msg)
 
         # Save as PDF
         filename = f"LegalSathi_{int(time.time())}.pdf"
         pdf_path = text_to_pdf(ai_reply, filename)
         print(f"📄 PDF saved at: {pdf_path}")
 
-        # Shorten long responses
+        # Split message if too long for WhatsApp
         if len(ai_reply) > 1500:
             ai_reply = ai_reply[:1500] + "\n\n📎 Full document saved. Type *pdf* to get the file."
 
         twilio_resp.message(ai_reply)
-        user_state[sender]["stage"] = "done"
+
+        # 🟢 Auto show main menu after every task
+        user_state[sender]["stage"] = "menu"
+        menu = (
+            "\n⚖️ *What would you like to do next?*\n"
+            "1️⃣ Summarize another document\n"
+            "2️⃣ Draft another contract\n"
+            "3️⃣ Explain a legal clause\n\n"
+            "_(Reply with 1, 2, or 3)_"
+        )
+        twilio_resp.message(menu)
+
         return Response(str(twilio_resp), mimetype="application/xml")
 
-    # === 5️⃣ Fallback: remind them to type hi ===
-    twilio_resp.message("👋 Type *hi* to start using LegalSathi.")
+    # === 5️⃣ Handle PDF Request ===
+    if incoming_msg.lower() == "pdf":
+        pdf_path = "generated_pdfs/LegalSathi_Document.pdf"
+        if os.path.exists(pdf_path):
+            return send_file(pdf_path, as_attachment=True)
+        else:
+            twilio_resp.message("⚠️ No document found. Please generate one first.")
+            return Response(str(twilio_resp), mimetype="application/xml")
+
+    # === 6️⃣ Default Fallback ===
+    twilio_resp.message("👋 Type *menu* to see available options.")
     return Response(str(twilio_resp), mimetype="application/xml")
-
-
-# ================== RUN FLASK SERVER ==================
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    print(f"🚀 LegalSathi WhatsApp Bot is running on 0.0.0.0:{port}/whatsapp")
-    app.run(host="0.0.0.0", port=port)
