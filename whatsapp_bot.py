@@ -1,6 +1,5 @@
 from flask import Flask, request, Response, send_file
 from twilio.twiml.messaging_response import MessagingResponse
-from twilio.rest import Client as TwilioClient
 from groq import Groq
 import os, time
 from dotenv import load_dotenv
@@ -10,17 +9,12 @@ from pdf_utils import text_to_pdf
 load_dotenv()
 app = Flask(__name__)
 
-# Groq + Twilio
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-twilio_client = TwilioClient(
-    os.getenv("TWILIO_ACCOUNT_SID"),
-    os.getenv("TWILIO_AUTH_TOKEN")
-)
 
-TWILIO_WHATSAPP = "whatsapp:+14155238886"  # Twilio sandbox number
 PDF_DIR = "generated_pdfs"
 os.makedirs(PDF_DIR, exist_ok=True)
 user_state = {}
+
 
 # ================== AI HELPER ==================
 def ask_ai(context, prompt):
@@ -29,9 +23,11 @@ def ask_ai(context, prompt):
         completion = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
-                {"role": "system",
-                 "content": "You are LegalSathi, an Indian AI legal assistant. Be clear, lawful, and professional."},
-                {"role": "user", "content": f"{context}\n{prompt}"}
+                {
+                    "role": "system",
+                    "content": "You are LegalSathi, an Indian AI legal assistant. Be professional and concise.",
+                },
+                {"role": "user", "content": f"{context}\n{prompt}"},
             ],
         )
         return completion.choices[0].message.content.strip()
@@ -39,29 +35,17 @@ def ask_ai(context, prompt):
         print("Groq Error:", e)
         return "⚠️ Sorry, I couldn’t process that right now. Please try again later."
 
-# ================== AUTO-MENU FUNCTION ==================
+
+# ================== MENU TEXT ==================
 def get_menu():
-    """Returns the main menu message"""
     return (
-        "⚖️ *LegalSathi Main Menu*\n\n"
-        "Choose what you'd like me to help with:\n"
+        "📋 *Main Menu*\n\n"
         "1️⃣ Summarize a legal document\n"
         "2️⃣ Draft a contract or agreement\n"
         "3️⃣ Explain a legal clause\n\n"
-        "_Reply with 1, 2, or 3._"
+        "_Reply with 1, 2, or 3 to begin._"
     )
 
-def send_auto_menu(to_number):
-    """Send proactive menu message to user"""
-    try:
-        twilio_client.messages.create(
-            from_=TWILIO_WHATSAPP,
-            to=to_number,
-            body=get_menu()
-        )
-        print(f"✅ Auto menu sent to {to_number}")
-    except Exception as e:
-        print(f"⚠️ Failed to send auto menu: {e}")
 
 # ================== HOMEPAGE ==================
 @app.route("/")
@@ -69,12 +53,13 @@ def home():
     return """
     <html><body style='font-family:Arial;text-align:center;margin-top:80px'>
     <h1>⚖️ LegalSathi</h1>
-    <p>Your Indian AI legal assistant on WhatsApp.</p>
-    <p>Get instant help drafting, summarizing, or explaining legal documents.</p>
+    <p>Instant Indian Legal Help on WhatsApp</p>
+    <p>Draft, Summarize, or Explain Legal Content — Instantly.</p>
     </body></html>
     """
 
-# ================== MAIN WHATSAPP LOGIC ==================
+
+# ================== WHATSAPP ROUTE ==================
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
     sender = request.values.get("From", "")
@@ -99,7 +84,7 @@ def whatsapp_reply():
         print("📤 Sent welcome menu to new user.")
         return Response(str(resp), mimetype="application/xml")
 
-    # === USER REQUESTS MENU / HI AGAIN ===
+    # === USER REQUESTS MENU / HI / HELLO ===
     if body.lower() in ["hi", "hello", "menu", "start", "hey"]:
         user_state[sender]["stage"] = "menu"
         resp.message(get_menu())
@@ -148,8 +133,9 @@ def whatsapp_reply():
         # Split long messages
         max_len = 1500
         for i in range(0, len(ai_reply), max_len):
-            resp.message(ai_reply[i:i+max_len])
+            resp.message(ai_reply[i:i + max_len])
 
+        # ✅ Auto display menu after task
         resp.message("✅ Task completed successfully!\n\n📎 Type *pdf* to download your document.\n\n" + get_menu())
         user_state[sender]["stage"] = "menu"
         return Response(str(resp), mimetype="application/xml")
@@ -168,7 +154,8 @@ def whatsapp_reply():
     resp.message("🤖 I didn’t understand. Type *menu* to see options again.")
     return Response(str(resp), mimetype="application/xml")
 
-# ================== RUN FLASK SERVER ==================
+
+# ================== RUN FLASK APP ==================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     print(f"🚀 LegalSathi running on http://0.0.0.0:{port}/whatsapp")
