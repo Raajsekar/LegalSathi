@@ -1,4 +1,5 @@
-streamlit
-openai
-PyPDF2
+Flask
+twilio
 python-dotenv
+groq
+reportlab
