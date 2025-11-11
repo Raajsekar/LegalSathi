@@ -51,6 +51,9 @@ def home():
     """
 
 # ================== WHATSAPP WEBHOOK ==================
+# Global memory to track user state
+user_state = {}
+
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
     incoming_msg = request.values.get("Body", "").strip()
@@ -59,8 +62,9 @@ def whatsapp_reply():
 
     twilio_resp = MessagingResponse()
 
-    # === 🟢 1️⃣ Auto Menu Greeting for first-time or inactive users ===
-    if sender not in user_state or user_state[sender].get("stage") in ["done", None]:
+    # === 🟢 1️⃣ FIRST MESSAGE (new user or session expired) ===
+    if sender not in user_state:
+        user_state[sender] = {"stage": "menu"}  # start fresh
         menu = (
             "👋 *Welcome to LegalSathi!*\n\n"
             "Please choose what you’d like to do:\n"
@@ -70,63 +74,55 @@ def whatsapp_reply():
             "_(Reply with 1, 2, or 3)_"
         )
         twilio_resp.message(menu)
-        user_state[sender] = {"stage": "menu"}
         return Response(str(twilio_resp), mimetype="application/xml")
 
-    # === 2️⃣ Handle 'hi', 'menu', or 'restart' messages explicitly ===
-    if incoming_msg.lower() in ["hi", "hello", "menu", "restart", "start"]:
+    # === 2️⃣ Handle 'hi', 'menu', 'start' ===
+    if incoming_msg.lower() in ["hi", "hello", "menu", "start"]:
+        user_state[sender]["stage"] = "menu"
         menu = (
             "⚖️ *Welcome back to LegalSathi!*\n\n"
-            "Choose an option below:\n"
             "1️⃣ Summarize a legal document\n"
             "2️⃣ Draft a legal contract\n"
             "3️⃣ Explain a legal clause\n\n"
             "_(Reply with 1, 2, or 3)_"
         )
         twilio_resp.message(menu)
-        user_state[sender]["stage"] = "menu"
         return Response(str(twilio_resp), mimetype="application/xml")
 
     # === 3️⃣ Handle menu choices ===
-    if sender in user_state and user_state[sender]["stage"] == "menu":
+    if user_state[sender]["stage"] == "menu":
         if incoming_msg == "1":
-            twilio_resp.message("📄 Please paste the *legal document* you want me to summarize.")
             user_state[sender]["stage"] = "summarize"
+            twilio_resp.message("📄 Please paste the *legal document* you want summarized.")
             return Response(str(twilio_resp), mimetype="application/xml")
-
         elif incoming_msg == "2":
-            twilio_resp.message("✍️ Please describe the *contract or agreement* you want me to generate.")
             user_state[sender]["stage"] = "contract"
+            twilio_resp.message("✍️ Please describe the *contract or agreement* you want generated.")
             return Response(str(twilio_resp), mimetype="application/xml")
-
         elif incoming_msg == "3":
-            twilio_resp.message("📘 Please paste the *legal clause or document* you want me to explain.")
             user_state[sender]["stage"] = "explain"
+            twilio_resp.message("📘 Please paste the *clause or document* you want explained.")
             return Response(str(twilio_resp), mimetype="application/xml")
-
         else:
-            twilio_resp.message("⚠️ Invalid choice. Please reply with 1, 2, or 3.")
+            twilio_resp.message("⚠️ Invalid option. Reply with 1, 2, or 3.")
             return Response(str(twilio_resp), mimetype="application/xml")
 
-    # === 4️⃣ Handle tasks (summarize / contract / explain) ===
-    if sender in user_state and user_state[sender]["stage"] in ["summarize", "contract", "explain"]:
-        stage = user_state[sender]["stage"]
-
+    # === 4️⃣ Handle AI actions ===
+    stage = user_state[sender]["stage"]
+    if stage in ["summarize", "contract", "explain"]:
         if stage == "summarize":
             ai_reply = ask_ai("Summarize this legal document in simple, clear Indian English:", incoming_msg)
         elif stage == "contract":
             ai_reply = ask_ai("Create a professional Indian legal contract for this request:", incoming_msg)
         elif stage == "explain":
             ai_reply = ask_ai("Explain this legal clause in plain Indian legal language:", incoming_msg)
-        else:
-            ai_reply = "⚠️ Something went wrong. Please type *menu* to restart."
 
         # Save as PDF
         filename = f"LegalSathi_{int(time.time())}.pdf"
         pdf_path = text_to_pdf(ai_reply, filename)
         print(f"📄 PDF saved at: {pdf_path}")
 
-        # Split message if too long for WhatsApp
+        # Shorten long responses
         if len(ai_reply) > 1500:
             ai_reply = ai_reply[:1500] + "\n\n📎 Full document saved. Type *pdf* to get the file."
 
@@ -134,17 +130,8 @@ def whatsapp_reply():
         user_state[sender]["stage"] = "done"
         return Response(str(twilio_resp), mimetype="application/xml")
 
-    # === 5️⃣ PDF retrieval ===
-    if incoming_msg.lower() == "pdf":
-        pdf_path = "generated_pdfs/LegalSathi_Document.pdf"
-        if os.path.exists(pdf_path):
-            return send_file(pdf_path, as_attachment=True)
-        else:
-            twilio_resp.message("⚠️ No recent document found. Please generate one first.")
-            return Response(str(twilio_resp), mimetype="application/xml")
-
-    # === 6️⃣ Default fallback ===
-    twilio_resp.message("👋 Type *menu* to see options again.")
+    # === 5️⃣ Fallback: remind them to type hi ===
+    twilio_resp.message("👋 Type *hi* to start using LegalSathi.")
     return Response(str(twilio_resp), mimetype="application/xml")
 
 
