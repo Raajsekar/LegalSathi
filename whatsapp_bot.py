@@ -8,23 +8,22 @@ from pdf_utils import text_to_pdf
 # ================== SETUP ==================
 load_dotenv()
 app = Flask(__name__)
-
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-
-PDF_DIR = "generated_pdfs"
-os.makedirs(PDF_DIR, exist_ok=True)
 user_state = {}
 
-# ================== AI HELPER ==================
+# ================== AI HELPER FUNCTION ==================
 def ask_ai(context, prompt):
-    """Ask Groq Llama model and return response"""
+    """Send prompt to Groq API and return AI-generated text."""
     try:
         completion = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
                 {
                     "role": "system",
-                    "content": "You are LegalSathi, an Indian AI legal assistant. Be professional, concise, and friendly.",
+                    "content": (
+                        "You are LegalSathi, an Indian AI legal assistant. "
+                        "Be professional, lawful, and clear in Indian legal context."
+                    ),
                 },
                 {"role": "user", "content": f"{context}\n{prompt}"},
             ],
@@ -35,131 +34,122 @@ def ask_ai(context, prompt):
         return "⚠️ Sorry, I couldn’t process that right now. Please try again later."
 
 
-# ================== MENU TEXT ==================
-def get_menu():
-    return (
-        "📋 *Main Menu*\n\n"
-        "1️⃣ Summarize a legal document\n"
-        "2️⃣ Draft a contract or agreement\n"
-        "3️⃣ Explain a legal clause\n\n"
-        "_Reply with 1, 2, or 3 to begin._"
-    )
-
-
-# ================== HOMEPAGE ==================
+# ================== WEB HOMEPAGE ==================
 @app.route("/")
 def home():
     return """
-    <html><body style='font-family:Arial;text-align:center;margin-top:80px'>
-    <h1>⚖️ LegalSathi</h1>
-    <p>Instant Indian Legal Help on WhatsApp</p>
-    <p>Draft, Summarize, or Explain Legal Content — Instantly.</p>
-    </body></html>
+    <html>
+        <head><title>⚖️ LegalSathi - Indian Legal AI</title></head>
+        <body style='font-family:Arial;text-align:center;margin-top:100px'>
+            <h1>⚖️ LegalSathi</h1>
+            <p>Your AI-powered Indian legal assistant, available 24/7 on WhatsApp.</p>
+            <p>Use LegalSathi to:</p>
+            <ul style='list-style:none;'>
+                <li>📄 Summarize legal documents</li>
+                <li>✍️ Draft contracts and agreements</li>
+                <li>📘 Explain legal clauses</li>
+            </ul>
+            <p><b>WhatsApp:</b> +1 (Twilio Sandbox Number)</p>
+            <p><i>Powered by Groq AI + Twilio</i></p>
+        </body>
+    </html>
     """
 
 
-# ================== TWILIO HEALTH CHECK ==================
-@app.route("/test_twilio", methods=["GET", "POST"])
-def test_twilio():
-    print("✅ Twilio health check received!")
-    return Response("Twilio webhook active ✅", mimetype="text/plain")
-
-
-# ================== WHATSAPP ROUTE ==================
+# ================== MAIN CHAT LOGIC ==================
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
+    incoming_msg = (request.values.get("Body") or "").strip()
     sender = request.values.get("From", "")
-    body = (request.values.get("Body") or "").strip()
-    num_media = int(request.values.get("NumMedia", 0))
-    print(f"📩 Message from {sender}: {body or '[empty]'} (media: {num_media})")
+    print(f"📩 Message from {sender}: {incoming_msg}")
 
     resp = MessagingResponse()
 
-    # Always initialize sender state if not exists
-    if sender not in user_state:
-        user_state[sender] = {"stage": None}
-
-    # === AUTO MENU TRIGGER ===
-    if not body or body.lower() in ["hi", "hello", "hey", "start", "menu"] or not user_state[sender]["stage"]:
-        user_state[sender]["stage"] = "menu"
-        welcome_text = (
+    # 🟢 AUTO-MENU: Show greeting and menu *even if user sends nothing*
+    if sender not in user_state or incoming_msg == "":
+        user_state[sender] = {"stage": "menu"}
+        greeting = (
             "👋 *Welcome to LegalSathi!*\n\n"
-            "I can help you with the following:\n"
-            "1️⃣ Summarize a legal document\n"
-            "2️⃣ Draft a contract or agreement\n"
-            "3️⃣ Explain a legal clause\n\n"
-            "_Please reply with 1, 2, or 3 to begin._"
+            "I can help you with:\n"
+            "1️⃣ Summarizing a legal document\n"
+            "2️⃣ Drafting a contract or agreement\n"
+            "3️⃣ Explaining a legal clause\n\n"
+            "_Reply with 1, 2, or 3 to continue._"
         )
-        resp.message(welcome_text)
-        print("📤 Sent welcome menu to user.")
+        resp.message(greeting)
         return Response(str(resp), mimetype="application/xml")
 
+    # 🧭 MENU SELECTION
     stage = user_state[sender]["stage"]
 
-    # === MENU SELECTION ===
     if stage == "menu":
-        if body in ["1", "summarize", "summary"]:
+        if incoming_msg in ["1", "summarize", "summary"]:
             user_state[sender]["stage"] = "summarize"
-            resp.message("📄 Please paste or upload the *legal document* you'd like summarized.")
-        elif body in ["2", "contract", "agreement"]:
+            resp.message("📄 Please paste the *legal document text or link* to summarize.")
+            return Response(str(resp), mimetype="application/xml")
+
+        elif incoming_msg in ["2", "contract", "agreement"]:
             user_state[sender]["stage"] = "contract"
-            resp.message("✍️ Please describe the *contract or agreement* you'd like drafted (names, details, duration).")
-        elif body in ["3", "explain", "clause"]:
+            resp.message("✍️ Please describe the *contract or agreement* you'd like drafted.")
+            return Response(str(resp), mimetype="application/xml")
+
+        elif incoming_msg in ["3", "explain", "clause"]:
             user_state[sender]["stage"] = "explain"
-            resp.message("📘 Please paste the *legal clause or section* you'd like explained.")
+            resp.message("📘 Please paste the *legal clause or paragraph* you want explained.")
+            return Response(str(resp), mimetype="application/xml")
+
+        elif incoming_msg.lower() in ["hi", "hello", "menu", "start", "restart"]:
+            resp.message(
+                "⚖️ *Main Menu:*\n1️⃣ Summarize a document\n2️⃣ Draft a contract\n3️⃣ Explain a clause\n\n_Reply with 1, 2, or 3._"
+            )
+            return Response(str(resp), mimetype="application/xml")
+
         else:
-            resp.message("⚠️ Invalid option. Reply with 1, 2, or 3.")
-        return Response(str(resp), mimetype="application/xml")
+            resp.message("⚠️ Invalid choice. Reply with 1, 2, or 3.")
+            return Response(str(resp), mimetype="application/xml")
 
-    # === HANDLE SUMMARIZE / CONTRACT / EXPLAIN ===
+    # 🧠 EXECUTE TASKS
     if stage in ["summarize", "contract", "explain"]:
-        if num_media > 0:
-            media_url = request.values.get("MediaUrl0")
-            media_type = request.values.get("MediaContentType0")
-            body += f"\n[User uploaded {media_type}: {media_url}]"
-            print(f"📎 Media received: {media_url}")
+        if stage == "summarize":
+            context = "Summarize this legal document clearly in Indian English:"
+        elif stage == "contract":
+            context = "Draft a legally valid Indian contract or agreement based on this request:"
+        elif stage == "explain":
+            context = "Explain this legal clause in simple Indian legal terms:"
 
-        context = {
-            "summarize": "Summarize this legal document in clear Indian English.",
-            "contract": "Draft a professional Indian legal contract based on this request.",
-            "explain": "Explain this legal clause in simple, clear terms.",
-        }[stage]
+        ai_reply = ask_ai(context, incoming_msg)
 
-        print(f"🧠 Processing {stage} for {sender}...")
-        ai_reply = ask_ai(context, body)
-
-        # Save to PDF
+        # Save PDF
         filename = f"LegalSathi_{int(time.time())}.pdf"
         pdf_path = text_to_pdf(ai_reply, filename)
-        print(f"📄 PDF saved: {pdf_path}")
+        print(f"📄 PDF saved to {pdf_path}")
 
         # Split long messages
         max_len = 1500
-        for i in range(0, len(ai_reply), max_len):
-            resp.message(ai_reply[i:i + max_len])
+        for chunk in [ai_reply[i:i+max_len] for i in range(0, len(ai_reply), max_len)]:
+            resp.message(chunk)
 
-        # Auto show menu again
-        resp.message("✅ Task completed successfully!\n\n📎 Type *pdf* to download your document.\n\n" + get_menu())
+        resp.message("📎 Type *pdf* to get the document.\n⚖️ Type *menu* to return to main menu.")
         user_state[sender]["stage"] = "menu"
         return Response(str(resp), mimetype="application/xml")
 
-    # === PDF DOWNLOAD ===
-    if body.lower() == "pdf":
-        pdf_files = [f for f in os.listdir(PDF_DIR) if f.endswith(".pdf")]
+    # 📂 PDF REQUEST
+    if incoming_msg.lower() == "pdf":
+        pdf_files = [f for f in os.listdir("generated_pdfs") if f.endswith(".pdf")]
         if pdf_files:
-            latest = max(pdf_files, key=lambda f: os.path.getctime(os.path.join(PDF_DIR, f)))
-            return send_file(os.path.join(PDF_DIR, latest), as_attachment=True)
+            latest = max(pdf_files, key=lambda f: os.path.getctime(os.path.join("generated_pdfs", f)))
+            return send_file(f"generated_pdfs/{latest}", as_attachment=True)
         else:
-            resp.message("⚠️ No document found. Please complete a task first.")
+            resp.message("⚠️ No document found. Please generate one first.")
             return Response(str(resp), mimetype="application/xml")
 
-    # === DEFAULT FALLBACK ===
-    resp.message("🤖 I didn’t understand. Type *menu* to see options again.")
+    # 🔁 DEFAULT FALLBACK
+    resp.message("🤖 Type *menu* to see available options again.")
     return Response(str(resp), mimetype="application/xml")
 
 
-# ================== RUN FLASK APP ==================
+# ================== RUN FLASK SERVER ==================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    print(f"🚀 LegalSathi running on http://0.0.0.0:{port}/whatsapp")
+    print(f"🚀 LegalSathi Bot running on http://0.0.0.0:{port}/whatsapp")
     app.run(host="0.0.0.0", port=port)
