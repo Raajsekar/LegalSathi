@@ -80,86 +80,81 @@ def whatsapp_reply():
     sender = request.values.get("From", "")
     body = (request.values.get("Body") or "").strip()
     num_media = int(request.values.get("NumMedia", 0))
-    print(f"📩 Message from {sender}: {body or '[no text]'} (media: {num_media})")
+    print(f"📩 Message from {sender}: {body or '[empty]'} (media: {num_media})")
 
     resp = MessagingResponse()
 
-    # ========= 1. NEW USER WELCOME =========
- # === New User or First Interaction ===
-if sender not in user_state:
-    user_state[sender] = {"stage": "menu"}
-    welcome_text = (
-        "👋 Hi there! I'm *LegalSathi*, your AI legal assistant.\n\n"
-        "To get started, please choose an option below 👇\n\n" + get_menu()
-    )
-    resp.message(welcome_text)
-    return Response(str(resp), mimetype="application/xml")
+    # === FIRST MESSAGE (New User or No State Saved) ===
+    if sender not in user_state or not user_state[sender].get("stage"):
+        user_state[sender] = {"stage": "menu"}
+        welcome_text = (
+            "👋 Hi there! I'm *LegalSathi*, your AI legal assistant.\n\n"
+            "I can help you with the following:\n"
+            "1️⃣ Summarize a legal document\n"
+            "2️⃣ Draft a contract or agreement\n"
+            "3️⃣ Explain a legal clause\n\n"
+            "_Please reply with 1, 2, or 3 to begin._"
+        )
+        resp.message(welcome_text)
+        print("📤 Sent welcome menu to new user.")
+        return Response(str(resp), mimetype="application/xml")
 
-    # ========= 2. MANUAL MENU REQUEST =========
-    if body.lower() in ["menu", "hi", "hello", "restart", "start"]:
+    # === USER REQUESTS MENU / HI AGAIN ===
+    if body.lower() in ["hi", "hello", "menu", "start", "hey"]:
         user_state[sender]["stage"] = "menu"
-        send_auto_menu(sender)
+        resp.message(get_menu())
+        print("📤 Displayed main menu again.")
         return Response(str(resp), mimetype="application/xml")
 
     stage = user_state[sender]["stage"]
 
-    # ========= 3. USER CHOOSES AN OPTION =========
+    # === MENU SELECTION ===
     if stage == "menu":
         if body in ["1", "summarize", "summary"]:
             user_state[sender]["stage"] = "summarize"
-            resp.message("📄 Please paste or upload the *legal document* you want summarized.")
-            return Response(str(resp), mimetype="application/xml")
-
+            resp.message("📄 Please paste or upload the *legal document* you'd like summarized.")
         elif body in ["2", "contract", "agreement"]:
             user_state[sender]["stage"] = "contract"
-            resp.message("✍️ Please describe the *contract or agreement* you'd like drafted (parties, duration, etc).")
-            return Response(str(resp), mimetype="application/xml")
-
+            resp.message("✍️ Please describe the *contract or agreement* you'd like drafted (names, details, duration).")
         elif body in ["3", "explain", "clause"]:
             user_state[sender]["stage"] = "explain"
             resp.message("📘 Please paste the *legal clause or section* you'd like explained.")
-            return Response(str(resp), mimetype="application/xml")
-
         else:
-            resp.message("⚠️ Invalid choice. Reply with 1, 2, or 3.")
-            return Response(str(resp), mimetype="application/xml")
+            resp.message("⚠️ Invalid option. Reply with 1, 2, or 3.")
+        return Response(str(resp), mimetype="application/xml")
 
-    # ========= 4. ACTIVE TASK (SUMMARIZE / CONTRACT / EXPLAIN) =========
+    # === PROCESS SUMMARIZE / CONTRACT / EXPLAIN ===
     if stage in ["summarize", "contract", "explain"]:
-        # Detect media (uploaded file)
         if num_media > 0:
             media_url = request.values.get("MediaUrl0")
             media_type = request.values.get("MediaContentType0")
             body += f"\n[User uploaded {media_type}: {media_url}]"
             print(f"📎 Media received: {media_url}")
 
-        # Determine context
-        if stage == "summarize":
-            context = "Summarize this legal document clearly in Indian English."
-        elif stage == "contract":
-            context = "Draft a detailed professional Indian legal contract based on this request."
-        else:
-            context = "Explain this legal clause in simple and clear Indian language."
+        context = {
+            "summarize": "Summarize this legal document in clear Indian English.",
+            "contract": "Draft a professional Indian legal contract based on this request.",
+            "explain": "Explain this legal clause in simple, clear terms.",
+        }[stage]
 
-        print(f"🧠 Processing {stage} for {sender}")
+        print(f"🧠 Processing {stage} request for {sender}...")
         ai_reply = ask_ai(context, body)
 
-        # Save AI output as PDF
+        # Save PDF
         filename = f"LegalSathi_{int(time.time())}.pdf"
         pdf_path = text_to_pdf(ai_reply, filename)
-        print(f"📄 PDF saved at: {pdf_path}")
+        print(f"📄 PDF saved: {pdf_path}")
 
-        # Split long WhatsApp message
+        # Split long messages
         max_len = 1500
         for i in range(0, len(ai_reply), max_len):
             resp.message(ai_reply[i:i+max_len])
 
-        # Auto display main menu
-        resp.message("✅ Task completed!\n\n📎 Type *pdf* to download your document.\n\n" + get_menu())
+        resp.message("✅ Task completed successfully!\n\n📎 Type *pdf* to download your document.\n\n" + get_menu())
         user_state[sender]["stage"] = "menu"
         return Response(str(resp), mimetype="application/xml")
 
-    # ========= 5. PDF DOWNLOAD =========
+    # === PDF DOWNLOAD ===
     if body.lower() == "pdf":
         pdf_files = [f for f in os.listdir(PDF_DIR) if f.endswith(".pdf")]
         if pdf_files:
@@ -169,7 +164,7 @@ if sender not in user_state:
             resp.message("⚠️ No document found. Please complete a task first.")
             return Response(str(resp), mimetype="application/xml")
 
-    # ========= 6. FALLBACK =========
+    # === FALLBACK ===
     resp.message("🤖 I didn’t understand. Type *menu* to see options again.")
     return Response(str(resp), mimetype="application/xml")
 
