@@ -15,7 +15,6 @@ PDF_DIR = "generated_pdfs"
 os.makedirs(PDF_DIR, exist_ok=True)
 user_state = {}
 
-
 # ================== AI HELPER ==================
 def ask_ai(context, prompt):
     """Ask Groq Llama model and return response"""
@@ -25,7 +24,7 @@ def ask_ai(context, prompt):
             messages=[
                 {
                     "role": "system",
-                    "content": "You are LegalSathi, an Indian AI legal assistant. Be professional and concise.",
+                    "content": "You are LegalSathi, an Indian AI legal assistant. Be professional, concise, and friendly.",
                 },
                 {"role": "user", "content": f"{context}\n{prompt}"},
             ],
@@ -59,6 +58,13 @@ def home():
     """
 
 
+# ================== TWILIO HEALTH CHECK ==================
+@app.route("/test_twilio", methods=["GET", "POST"])
+def test_twilio():
+    print("✅ Twilio health check received!")
+    return Response("Twilio webhook active ✅", mimetype="text/plain")
+
+
 # ================== WHATSAPP ROUTE ==================
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
@@ -73,8 +79,8 @@ def whatsapp_reply():
     if sender not in user_state:
         user_state[sender] = {"stage": None}
 
-    # Always show menu if message is empty, hi, hello, start, or no stage yet
-    if not body or body.lower() in ["hi", "hello", "hey", "start", "menu"] or not user_state[sender].get("stage"):
+    # === AUTO MENU TRIGGER ===
+    if not body or body.lower() in ["hi", "hello", "hey", "start", "menu"] or not user_state[sender]["stage"]:
         user_state[sender]["stage"] = "menu"
         welcome_text = (
             "👋 *Welcome to LegalSathi!*\n\n"
@@ -150,6 +156,7 @@ def whatsapp_reply():
     # === DEFAULT FALLBACK ===
     resp.message("🤖 I didn’t understand. Type *menu* to see options again.")
     return Response(str(resp), mimetype="application/xml")
+
 
 # ================== RUN FLASK APP ==================
 if __name__ == "__main__":
