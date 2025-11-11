@@ -85,11 +85,15 @@ def whatsapp_reply():
     resp = MessagingResponse()
 
     # ========= 1. NEW USER WELCOME =========
-    if sender not in user_state:
-        user_state[sender] = {"stage": "menu"}
-        send_auto_menu(sender)
-        resp.message("👋 Welcome to *LegalSathi*! Check your WhatsApp inbox for options.")
-        return Response(str(resp), mimetype="application/xml")
+ # === New User or First Interaction ===
+if sender not in user_state:
+    user_state[sender] = {"stage": "menu"}
+    welcome_text = (
+        "👋 Hi there! I'm *LegalSathi*, your AI legal assistant.\n\n"
+        "To get started, please choose an option below 👇\n\n" + get_menu()
+    )
+    resp.message(welcome_text)
+    return Response(str(resp), mimetype="application/xml")
 
     # ========= 2. MANUAL MENU REQUEST =========
     if body.lower() in ["menu", "hi", "hello", "restart", "start"]:
