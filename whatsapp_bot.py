@@ -1,7 +1,3 @@
-# =====================================
-# ✅ LegalSathi WhatsApp Bot — Final Version
-# =====================================
-
 from flask import Flask, request, Response, send_file
 from twilio.twiml.messaging_response import MessagingResponse
 from groq import Groq
@@ -9,16 +5,17 @@ import os, time
 from dotenv import load_dotenv
 from pdf_utils import text_to_pdf
 
+# ================== ENV & CLIENT SETUP ==================
 load_dotenv()
-
 app = Flask(__name__)
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-# Store user chat stage in memory
+# Store user conversation states
 user_state = {}
 
-# =============== AI HELPER FUNCTION ===============
+# ================== AI HELPER FUNCTION ==================
 def ask_ai(context, prompt):
+    """Send prompt to Groq and return AI-generated text"""
     try:
         completion = client.chat.completions.create(
             model="llama-3.1-8b-instant",
@@ -27,7 +24,7 @@ def ask_ai(context, prompt):
                     "role": "system",
                     "content": (
                         "You are LegalSathi, an Indian AI legal assistant. "
-                        "Provide clear, lawful, and helpful responses in the Indian legal context."
+                        "Be clear, professional, and accurate in Indian legal context."
                     ),
                 },
                 {"role": "user", "content": f"{context}\n{prompt}"},
@@ -39,10 +36,30 @@ def ask_ai(context, prompt):
         return "⚠️ Sorry, I couldn’t process that right now. Please try again later."
 
 
-# =============== MAIN WHATSAPP ROUTE ===============
-# Global state memory
-user_state = {}
+# ================== HOMEPAGE (FOR RENDER WEBSITE) ==================
+@app.route("/")
+def home():
+    return """
+    <html>
+        <head><title>⚖️ LegalSathi - AI Legal Assistant</title></head>
+        <body style="font-family: Arial; text-align: center; margin-top: 100px;">
+            <h1>⚖️ LegalSathi</h1>
+            <p>Your 24/7 AI-powered Indian legal assistant.</p>
+            <p>Now available on WhatsApp & web!</p>
+            <p><b>Use it to:</b></p>
+            <ul style="list-style:none;">
+                <li>📄 Summarize legal documents</li>
+                <li>✍️ Draft contracts & agreements</li>
+                <li>📘 Explain legal clauses</li>
+            </ul>
+            <p><b>WhatsApp:</b> +1 (Twilio Sandbox Number)</p>
+            <p><i>Powered by Groq AI + Twilio</i></p>
+        </body>
+    </html>
+    """
 
+
+# ================== MAIN CHATBOT LOGIC ==================
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
     incoming_msg = request.values.get("Body", "").strip()
@@ -51,101 +68,100 @@ def whatsapp_reply():
 
     twilio_resp = MessagingResponse()
 
-    # 🟢 Detect first message — greet immediately
+    # 🟢 GREET FIRST-TIME USERS
     if sender not in user_state:
         user_state[sender] = {"stage": "active"}
         welcome = (
             "👋 *Welcome to LegalSathi!*\n\n"
-            "I'm your AI legal assistant 🤖⚖️\n"
+            "I'm your AI legal assistant 🤖⚖️\n\n"
             "You can ask me to:\n"
             "• Summarize a legal document\n"
             "• Draft a contract or agreement\n"
-            "• Explain a legal clause or law\n\n"
+            "• Explain a legal clause\n\n"
             "Just type naturally, like:\n"
-            "_‘Summarize this agreement...’_ or _‘Explain this clause...’_"
+            "_‘Summarize this document...’_ or _‘Draft rent agreement between Raj and Kumar’_"
         )
         twilio_resp.message(welcome)
         return Response(str(twilio_resp), mimetype="application/xml")
 
-    # 🧠 Detect intent from text
+    # 🧠 DETECT INTENT
     msg_lower = incoming_msg.lower()
     intent = None
-    if "summarize" in msg_lower or "summary" in msg_lower or "scribd.com" in msg_lower:
+    if any(word in msg_lower for word in ["summarize", "summary", "scribd.com"]):
         intent = "summarize"
-    elif "contract" in msg_lower or "agreement" in msg_lower or "draft" in msg_lower:
+    elif any(word in msg_lower for word in ["contract", "agreement", "draft"]):
         intent = "contract"
-    elif "explain" in msg_lower or "meaning" in msg_lower or "interpret" in msg_lower:
+    elif any(word in msg_lower for word in ["explain", "meaning", "interpret", "clarify"]):
         intent = "explain"
-    elif incoming_msg.lower() in ["hi", "hello", "menu", "start", "restart"]:
+    elif msg_lower in ["hi", "hello", "menu", "start", "restart"]:
         intent = "menu"
-    elif incoming_msg.lower() == "pdf":
+    elif msg_lower == "pdf":
         intent = "pdf"
+    else:
+        intent = "general"
 
-    # 🔄 Menu intent
+    # ⚖️ HANDLE MENU
     if intent == "menu":
         menu = (
-            "⚖️ *What would you like to do next?*\n"
+            "⚖️ *What would you like to do next?*\n\n"
             "1️⃣ Summarize a legal document\n"
-            "2️⃣ Draft a contract\n"
-            "3️⃣ Explain a clause\n\n"
-            "You can just type something like:\n"
-            "➡️ ‘Summarize this document’ or ‘Draft an NDA between A and B’"
+            "2️⃣ Draft a contract or agreement\n"
+            "3️⃣ Explain a legal clause\n\n"
+            "Type what you want, like:\n"
+            "_‘Draft NDA between A and B’_ or _‘Summarize my lease agreement’_"
         )
         twilio_resp.message(menu)
         return Response(str(twilio_resp), mimetype="application/xml")
 
-    # 📄 Handle Summarize
-    if intent == "summarize":
-        ai_reply = ask_ai("Summarize this legal document clearly in simple Indian English:", incoming_msg)
+    # 📘 HANDLE TASKS
+    if intent in ["summarize", "contract", "explain", "general"]:
+        if intent == "summarize":
+            context = "Summarize this legal document clearly in simple Indian English:"
+        elif intent == "contract":
+            context = "Draft a professional Indian legal contract based on this request:"
+        elif intent == "explain":
+            context = "Explain this legal text in simple Indian legal language:"
+        else:
+            context = "Provide helpful legal advice or insights in Indian context:"
+
+        ai_reply = ask_ai(context, incoming_msg)
+
+        # SAVE PDF
         filename = f"LegalSathi_{int(time.time())}.pdf"
         pdf_path = text_to_pdf(ai_reply, filename)
-        print(f"📄 Summary saved at {pdf_path}")
-        twilio_resp.message(ai_reply[:1500] + "\n\n📎 Type *pdf* to get the full file.")
-        twilio_resp.message("⚖️ Want to do more? Type *menu* to continue.")
+        print(f"📄 PDF saved at: {pdf_path}")
+
+        # SPLIT MESSAGE FOR WHATSAPP
+        max_len = 1500
+        msg_parts = [ai_reply[i:i+max_len] for i in range(0, len(ai_reply), max_len)]
+        for part in msg_parts:
+            twilio_resp.message(part)
+        twilio_resp.message("📎 Type *pdf* to get the full document.\n⚖️ Type *menu* for more options.")
         return Response(str(twilio_resp), mimetype="application/xml")
 
-    # 🧾 Handle Contract Drafting
-    if intent == "contract":
-        ai_reply = ask_ai("Draft a professional Indian legal contract for this:", incoming_msg)
-        filename = f"LegalSathi_{int(time.time())}.pdf"
-        pdf_path = text_to_pdf(ai_reply, filename)
-        print(f"📄 Contract saved at {pdf_path}")
-        twilio_resp.message(ai_reply[:1500] + "\n\n📎 Type *pdf* to get the full contract.")
-        twilio_resp.message("⚖️ Want to do more? Type *menu* to continue.")
-        return Response(str(twilio_resp), mimetype="application/xml")
-
-    # 📘 Handle Explain
-    if intent == "explain":
-        ai_reply = ask_ai("Explain this legal text in clear, simple Indian legal terms:", incoming_msg)
-        filename = f"LegalSathi_{int(time.time())}.pdf"
-        pdf_path = text_to_pdf(ai_reply, filename)
-        print(f"📄 Explanation saved at {pdf_path}")
-        twilio_resp.message(ai_reply[:1500] + "\n\n📎 Type *pdf* to get the full explanation.")
-        twilio_resp.message("⚖️ Want to do more? Type *menu* to continue.")
-        return Response(str(twilio_resp), mimetype="application/xml")
-
-    # 📎 Handle PDF
+    # 📄 HANDLE PDF REQUEST
     if intent == "pdf":
         pdf_files = [f for f in os.listdir("generated_pdfs") if f.endswith(".pdf")]
         if pdf_files:
             latest_pdf = max(pdf_files, key=lambda f: os.path.getctime(os.path.join("generated_pdfs", f)))
             return send_file(f"generated_pdfs/{latest_pdf}", as_attachment=True)
         else:
-            twilio_resp.message("⚠️ No recent document found. Please generate one first.")
+            twilio_resp.message("⚠️ No document found. Please generate one first.")
             return Response(str(twilio_resp), mimetype="application/xml")
 
-    # 🟡 Default fallback — conversational
+    # 🔁 DEFAULT FALLBACK
     fallback = (
-        "🤖 I’m here to help with legal tasks.\n"
-        "Try saying:\n"
-        "• ‘Summarize this contract’\n"
-        "• ‘Draft an NDA between A and B’\n"
-        "• ‘Explain this legal clause’\n\n"
-        "Or type *menu* to see all options."
+        "🤖 I can help with:\n"
+        "• Drafting contracts\n"
+        "• Summarizing documents\n"
+        "• Explaining clauses\n\n"
+        "Type *menu* to start again ⚖️"
     )
     twilio_resp.message(fallback)
     return Response(str(twilio_resp), mimetype="application/xml")
 
+
+# ================== RUN FLASK SERVER ==================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     print(f"🚀 LegalSathi WhatsApp Bot is running on 0.0.0.0:{port}/whatsapp")
