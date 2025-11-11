@@ -1,19 +1,26 @@
 import streamlit as st
 from utils import ask_ai, generate_contract
 
-st.set_page_config(page_title="LegalSathi - AI Legal Assistant 🇮🇳", page_icon="⚖️", layout="centered")
+st.set_page_config(
+    page_title="LegalSathi - AI Legal Assistant 🇮🇳",
+    page_icon="⚖️",
+    layout="centered"
+)
 
-st.title("⚖️ LegalSathi - Your AI Legal Assistant")
-st.write("Ask LegalSathi to **summarize**, **draft**, **generate contracts**, or **advise** on legal documents related to India 🇮🇳")
+st.title("⚖️ LegalSathi - Your AI Legal Assistant 🇮🇳")
+st.write(
+    "Ask LegalSathi to **summarize**, **draft**, **generate contracts**, or **advise** "
+    "on legal documents related to India."
+)
 
-# Sidebar navigation
+# Sidebar Navigation
 st.sidebar.header("Choose Feature")
 feature = st.sidebar.radio(
     "Select a feature:",
     ["General Q&A", "Legal Drafting", "Summarize Document", "Get Advice", "Contract Generator"]
 )
 
-# ============ Feature 1: General Q&A / Drafting / Summary / Advice ============
+# ============ GENERAL, DRAFT, SUMMARY, ADVICE ============
 if feature in ["General Q&A", "Legal Drafting", "Summarize Document", "Get Advice"]:
     st.header(f"💬 {feature}")
     user_input = st.text_area("Enter your question or legal text:")
@@ -32,17 +39,14 @@ if feature in ["General Q&A", "Legal Drafting", "Summarize Document", "Get Advic
                         response = ask_ai(user_input, "summary")
                     elif feature == "Get Advice":
                         response = ask_ai(user_input, "advice")
-                    else:
-                        response = ask_ai(user_input)
 
                     st.success("✅ Response:")
                     st.write(response)
 
                 except Exception as e:
-                    st.error(f"An error occurred: {str(e)}")
+                    st.error(f"Error: {e}")
 
-
-# ============ Feature 2: Contract Generator ============
+# ============ CONTRACT GENERATOR ============
 elif feature == "Contract Generator":
     st.header("🧾 Contract Generator")
 
@@ -54,14 +58,16 @@ elif feature == "Contract Generator":
     details = st.text_area("Enter details (names, duration, payment terms, etc.)")
 
     if st.button("📝 Generate Contract"):
-        if details.strip():
+        if not details.strip():
+            st.warning("Please enter contract details.")
+        else:
             with st.spinner("Drafting your contract..."):
                 try:
                     contract_text = generate_contract(contract_type, details)
                     st.success("✅ Contract Generated Successfully!")
                     st.write(contract_text)
 
-                    # Save as docx file
+                    # Save as .docx
                     from docx import Document
                     doc = Document()
                     doc.add_paragraph(contract_text)
@@ -74,10 +80,7 @@ elif feature == "Contract Generator":
                             file_name=f"LegalSathi_{contract_type.replace(' ', '_')}.docx"
                         )
                 except Exception as e:
-                    st.error(f"Error: {str(e)}")
-        else:
-            st.warning("Please enter contract details before generating.")
-
+                    st.error(f"Error: {e}")
 
 st.markdown("---")
-st.markdown("💡 *LegalSathi provides AI-generated drafts for educational purposes. Always review documents with a legal expert before use.*")
+st.markdown("💡 *LegalSathi provides AI-generated drafts for educational purposes. Always review documents with a lawyer before final use.*")
