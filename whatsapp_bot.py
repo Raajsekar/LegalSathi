@@ -77,6 +77,22 @@ def process_message(msg):
     else:
         return ask_ai(msg)
 
+@app.route("/")
+def home():
+    return """
+    <html>
+        <head>
+            <title>LegalSathi - AI Legal Assistant</title>
+        </head>
+        <body style="font-family: Arial; text-align: center; margin-top: 100px;">
+            <h1>⚖️ LegalSathi</h1>
+            <p>Your AI-powered Indian legal assistant, available 24/7 on WhatsApp.</p>
+            <p>WhatsApp us at <b>+1 XXX XXX XXXX</b> (Twilio Sandbox)</p>
+            <p><i>Draft contracts, explain clauses, and get legal help instantly.</i></p>
+        </body>
+    </html>
+    """
+
 
 # ================== WHATSAPP WEBHOOK ==================
 @app.route("/whatsapp", methods=["POST"])
@@ -123,6 +139,7 @@ def whatsapp_reply():
     twilio_resp.message(ai_reply)
     print("🤖 AI reply sent successfully.")
     return Response(str(twilio_resp), mimetype="application/xml")
+
 
 # ================== RUN FLASK SERVER ==================
 if __name__ == "__main__":
