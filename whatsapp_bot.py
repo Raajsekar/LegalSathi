@@ -69,11 +69,15 @@ def whatsapp_reply():
 
     resp = MessagingResponse()
 
-    # === FIRST MESSAGE (New User or No State Saved) ===
-    if sender not in user_state or not user_state[sender].get("stage"):
-        user_state[sender] = {"stage": "menu"}
+    # Always initialize sender state if not exists
+    if sender not in user_state:
+        user_state[sender] = {"stage": None}
+
+    # Always show menu if message is empty, hi, hello, start, or no stage yet
+    if not body or body.lower() in ["hi", "hello", "hey", "start", "menu"] or not user_state[sender].get("stage"):
+        user_state[sender]["stage"] = "menu"
         welcome_text = (
-            "👋 Hi there! I'm *LegalSathi*, your AI legal assistant.\n\n"
+            "👋 *Welcome to LegalSathi!*\n\n"
             "I can help you with the following:\n"
             "1️⃣ Summarize a legal document\n"
             "2️⃣ Draft a contract or agreement\n"
@@ -81,14 +85,7 @@ def whatsapp_reply():
             "_Please reply with 1, 2, or 3 to begin._"
         )
         resp.message(welcome_text)
-        print("📤 Sent welcome menu to new user.")
-        return Response(str(resp), mimetype="application/xml")
-
-    # === USER REQUESTS MENU / HI / HELLO ===
-    if body.lower() in ["hi", "hello", "menu", "start", "hey"]:
-        user_state[sender]["stage"] = "menu"
-        resp.message(get_menu())
-        print("📤 Displayed main menu again.")
+        print("📤 Sent welcome menu to user.")
         return Response(str(resp), mimetype="application/xml")
 
     stage = user_state[sender]["stage"]
@@ -108,7 +105,7 @@ def whatsapp_reply():
             resp.message("⚠️ Invalid option. Reply with 1, 2, or 3.")
         return Response(str(resp), mimetype="application/xml")
 
-    # === PROCESS SUMMARIZE / CONTRACT / EXPLAIN ===
+    # === HANDLE SUMMARIZE / CONTRACT / EXPLAIN ===
     if stage in ["summarize", "contract", "explain"]:
         if num_media > 0:
             media_url = request.values.get("MediaUrl0")
@@ -122,10 +119,10 @@ def whatsapp_reply():
             "explain": "Explain this legal clause in simple, clear terms.",
         }[stage]
 
-        print(f"🧠 Processing {stage} request for {sender}...")
+        print(f"🧠 Processing {stage} for {sender}...")
         ai_reply = ask_ai(context, body)
 
-        # Save PDF
+        # Save to PDF
         filename = f"LegalSathi_{int(time.time())}.pdf"
         pdf_path = text_to_pdf(ai_reply, filename)
         print(f"📄 PDF saved: {pdf_path}")
@@ -135,7 +132,7 @@ def whatsapp_reply():
         for i in range(0, len(ai_reply), max_len):
             resp.message(ai_reply[i:i + max_len])
 
-        # ✅ Auto display menu after task
+        # Auto show menu again
         resp.message("✅ Task completed successfully!\n\n📎 Type *pdf* to download your document.\n\n" + get_menu())
         user_state[sender]["stage"] = "menu"
         return Response(str(resp), mimetype="application/xml")
@@ -150,10 +147,9 @@ def whatsapp_reply():
             resp.message("⚠️ No document found. Please complete a task first.")
             return Response(str(resp), mimetype="application/xml")
 
-    # === FALLBACK ===
+    # === DEFAULT FALLBACK ===
     resp.message("🤖 I didn’t understand. Type *menu* to see options again.")
     return Response(str(resp), mimetype="application/xml")
-
 
 # ================== RUN FLASK APP ==================
 if __name__ == "__main__":
