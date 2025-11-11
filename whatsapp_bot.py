@@ -145,3 +145,8 @@ def whatsapp_reply():
     )
     twilio_resp.message(fallback)
     return Response(str(twilio_resp), mimetype="application/xml")
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    print(f"🚀 LegalSathi WhatsApp Bot is running on 0.0.0.0:{port}/whatsapp")
+    app.run(host="0.0.0.0", port=port)
