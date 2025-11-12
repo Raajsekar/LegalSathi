@@ -1,6 +1,8 @@
+# backend/pdf_utils.py
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 import os
+import textwrap
 
 def text_to_pdf(text, filename="LegalSathi_Document.pdf"):
     os.makedirs("generated_pdfs", exist_ok=True)
@@ -11,32 +13,31 @@ def text_to_pdf(text, filename="LegalSathi_Document.pdf"):
     margin = 50
     y = height - margin
     line_height = 14
+    max_width = width - 2 * margin
+    font_name = "Helvetica"
+    font_size = 11
+    c.setFont(font_name, font_size)
 
-    # Very simple word-wrap
+    # Use simple textwrap to respect canvas width
+    # estimate the number of characters per line (conservative)
+    approx_char_per_line = int(max_width / (font_size * 0.5))
     for paragraph in text.split("\n"):
-        words = paragraph.split(" ")
-        line = ""
-        for w in words:
-            test_line = (line + " " + w).strip()
-            if c.stringWidth(test_line, "Helvetica", 11) < (width - 2*margin):
-                line = test_line
-            else:
-                c.setFont("Helvetica", 11)
-                c.drawString(margin, y, line)
-                y -= line_height
-                line = w
-                if y < margin:
-                    c.showPage()
-                    y = height - margin
-        if line:
-            c.setFont("Helvetica", 11)
+        if not paragraph.strip():
+            y -= line_height
+            if y < margin:
+                c.showPage()
+                c.setFont(font_name, font_size)
+                y = height - margin
+            continue
+
+        wrapped = textwrap.wrap(paragraph, width=approx_char_per_line)
+        for line in wrapped:
+            if y < margin:
+                c.showPage()
+                c.setFont(font_name, font_size)
+                y = height - margin
             c.drawString(margin, y, line)
             y -= line_height
-        # blank line between paragraphs
-        y -= line_height/2
-        if y < margin:
-            c.showPage()
-            y = height - margin
 
     c.save()
     return pdf_path
