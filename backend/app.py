@@ -1,6 +1,7 @@
 # backend/app.py
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
+from flask import request
 from dotenv import load_dotenv
 import os, uuid, time, urllib.parse, traceback
 from bson.objectid import ObjectId
@@ -64,6 +65,42 @@ UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs("generated_pdfs", exist_ok=True)
 
+# Basic GST calculation helper:
+def calculate_gst(amount: float, rate_percent: float, inclusive=False, interstate=False):
+    """
+    Returns dict with base_amount, gst_amount, cgst, sgst, igst, total.
+    - If inclusive=True, amount is GST-inclusive, we compute base and tax.
+    - interstate=True -> IGST applied, else split into CGST/SGST halves.
+    """
+    r = float(rate_percent or 0.0)
+    if inclusive:
+        base = amount / (1 + r/100)
+        gst_amount = amount - base
+    else:
+        base = amount
+        gst_amount = base * r / 100.0
+
+    if interstate:
+        igst = gst_amount
+        cgst = 0.0
+        sgst = 0.0
+    else:
+        igst = 0.0
+        cgst = gst_amount / 2.0
+        sgst = gst_amount / 2.0
+
+    total = base + gst_amount
+    return {
+        "base_amount": round(base, 2),
+        "gst_amount": round(gst_amount, 2),
+        "cgst": round(cgst, 2),
+        "sgst": round(sgst, 2),
+        "igst": round(igst, 2),
+        "total_amount": round(total, 2),
+        "rate_percent": r,
+        "inclusive": inclusive,
+        "interstate": interstate,
+    }
 
 # --- AI helper ---
 def ask_ai(context, user_input):
@@ -153,6 +190,55 @@ def simulate_stream(text, chunk_size=30, delay=0.03):
 
 
 # --- Routes ---
+
+@app.route("/api/gst/calc", methods=["POST"])
+def api_gst_calc():
+    """
+    POST JSON:
+      { "amount": 1000, "rate": 18, "inclusive": false, "interstate": false }
+    Returns GST calculation details.
+    """
+    data = request.get_json(force=True)
+    try:
+        amount = float(data.get("amount", 0))
+        rate = float(data.get("rate", 18))
+        inclusive = bool(data.get("inclusive", False))
+        interstate = bool(data.get("interstate", False))
+    except Exception:
+        return jsonify({"error": "Invalid input"}), 400
+
+    result = calculate_gst(amount, rate, inclusive=inclusive, interstate=interstate)
+    return jsonify(result)
+
+@app.route("/api/gst/tips")
+def api_gst_tips():
+    """
+    Return a short, safe list of lawful GST/tax planning tips and resources.
+    These are general pointers — not professional advice.
+    """
+    tips = [
+        {
+            "title": "Choose correct HSN/SAC & Invoice format",
+            "description": "Use correct HSN/SAC codes and maintain tax invoices — critical for input tax credit claims."
+        },
+        {
+            "title": "Claim Input Tax Credit (ITC) properly",
+            "description": "Maintain GST-compliant invoices and reconcile GSTR2B/2A to avoid blocked credits. Check composition scheme thresholds before opting in."
+        },
+        {
+            "title": "Composition scheme vs regular registration",
+            "description": "Small businesses may opt for composition (lower compliance) but composition dealers cannot claim ITC — choose based on business model."
+        },
+        {
+            "title": "Keep records for 6 years",
+            "description": "Maintain invoices, E-way bills and GST returns for statutory retention (subject to updates in law)."
+        },
+        {
+            "title": "When in doubt, consult a CA",
+            "description": "GST law is complex; for planning/loopholes consult a qualified Chartered Accountant — our tips are educational only."
+        },
+    ]
+    return jsonify(tips)
 @app.route("/")
 def home():
     return "⚖️ LegalSathi backend active"
@@ -291,6 +377,7 @@ def list_files(user_id):
     except Exception as e:
         print("list_files error:", e)
         return jsonify([])
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
     try:
@@ -321,8 +408,17 @@ def chat():
 
         msg_lower = message.lower()
 
-        # ✅ STEP 3: Intelligent context selection (your same logic)
-        if "agreement" in msg_lower or "contract" in msg_lower or "draft" in msg_lower:
+        # ✅ STEP 3: Intelligent context selection (your same logic + GST logic)
+        if any(word in msg_lower for word in ["gst", "tax", "taxes", "input credit", "itc", "turnover", "tax saving", "composition scheme"]):
+            # GST / Tax-related queries
+            context = (
+                "You are LegalSathi — a professional Indian GST and tax assistant. "
+                "When the user asks about GST, provide accurate calculations, lawful GST planning, and compliance guidance. "
+                "If the user gives an amount and GST rate, calculate CGST/SGST or IGST depending on interstate or intrastate. "
+                "Also provide lawful tax-saving ideas under Indian law (like 80C, 80D, or HRA), "
+                "but clearly state that this is for informational purposes only and not professional advice."
+            )
+        elif "agreement" in msg_lower or "contract" in msg_lower or "draft" in msg_lower:
             context = (
                 "Draft a detailed Indian legal agreement in numbered clauses. "
                 "Each section must have a heading (e.g., 1. Parties, 2. Term, 3. Rent, 4. Obligations, 5. Termination, 6. Governing Law). "
@@ -345,7 +441,8 @@ def chat():
         combined_prompt = (
             f"{context}\n\nConversation so far:\n{history_context}\n\n"
             f"User's new message:\n{message}\n\n"
-            "Please continue the conversation naturally, referring to previous context when relevant."
+            "Please continue the conversation naturally, referring to previous context when relevant. "
+            "If the topic is GST or tax, provide step-by-step accurate calculations and lawful saving suggestions."
         )
 
         # ✅ STEP 5: Generate AI response using existing helper
@@ -400,7 +497,6 @@ def search_chats(user_id):
     except Exception as e:
         print("API /api/search error:", e)
         return jsonify([])
-
 @app.route("/api/upload", methods=["POST"])
 def upload_file():
     try:
@@ -427,31 +523,60 @@ def upload_file():
         else:
             return jsonify({"error": "Unsupported file type"}), 400
 
-        # Decide AI task
-        # Decide AI task (generic summarization)
-        if task == "summarize":
-          context = (
-        "Summarize the uploaded document in clear, concise language. "
-        "Highlight key ideas, structure, important facts, and insights. "
-        "If it's a legal or business document, mention important terms or clauses, "
-        "but if it's any other type (research, article, notes, etc.), summarize naturally "
-        "without legal assumptions."
-    )
+        # ✅ Detect file topic — GST / tax / financial vs generic
+        text_preview = content[:2000].lower()
+        if any(word in text_preview for word in [
+            "gst", "goods and services tax", "cgst", "sgst", "igst", "input tax credit",
+            "invoice", "turnover", "taxable value", "itc", "tax saving", "income tax", "tds"
+        ]):
+            # GST or tax-related content
+            context = (
+                "You are LegalSathi, a professional Indian GST and tax assistant. "
+                "Analyze and summarize the uploaded GST or tax-related document. "
+                "Identify key figures such as taxable value, GST rate, CGST/SGST/IGST components, "
+                "and any compliance-related details (invoice number, date, supplier, buyer). "
+                "Provide a lawful summary including potential ITC eligibility, filing notes, "
+                "and common tax-saving insights — but clearly state this is for informational use only, "
+                "not professional advice."
+            )
+        elif "agreement" in text_preview or "contract" in text_preview or "legal" in text_preview:
+            # Legal document
+            context = (
+                "Summarize this legal document, highlighting important clauses, parties involved, "
+                "rights, obligations, termination terms, and governing law. "
+                "Explain in simple Indian legal English and mention key takeaways."
+            )
+        elif "research" in text_preview or "study" in text_preview or "paper" in text_preview:
+            # Academic or article type
+            context = (
+                "Summarize this research or article logically. Highlight main ideas, results, "
+                "methodology, and conclusions in clear simple points."
+            )
         else:
-          context = (
-        "Explain this document in simple terms, outlining the key points, sections, "
-        "and practical meaning for an average reader. Keep it factual and easy to read."
-    )
+            # Default — your original summarization logic
+            if task == "summarize":
+                context = (
+                    "Summarize the uploaded document in clear, concise language. "
+                    "Highlight key ideas, structure, important facts, and insights. "
+                    "If it's a legal or business document, mention important terms or clauses, "
+                    "but if it's any other type (research, article, notes, etc.), summarize naturally "
+                    "without legal assumptions."
+                )
+            else:
+                context = (
+                    "Explain this document in simple terms, outlining the key points, sections, "
+                    "and practical meaning for an average reader. Keep it factual and easy to read."
+                )
 
-        # Process content (trim for safety)
+        # ✅ Process content (trim for safety)
         content_trim = content[:8000]
         reply = ask_ai(context, content_trim)
 
-        # Generate a downloadable PDF of AI reply
+        # ✅ Generate a downloadable PDF of AI reply
         filename_pdf = f"{uuid.uuid4().hex[:8]}.pdf"
         pdf_path = text_to_pdf(reply, filename_pdf)
 
-        # Save chat record for user
+        # ✅ Save chat record for user
         try:
             if chats is not None:
                 chats.insert_one({
@@ -464,7 +589,7 @@ def upload_file():
         except Exception as e:
             print("Mongo save error:", e)
 
-        # ✅ Save file record for Library
+        # ✅ Save file record for Library (unchanged)
         try:
             db.get_collection("file_records").insert_one({
                 "user_id": user_id,
@@ -476,11 +601,13 @@ def upload_file():
         except Exception as e:
             print("file_records insert error:", e)
 
-        # Return AI reply
+        # ✅ Return AI reply and metadata
         return jsonify({
             "reply": reply,
-            "pdf_url": f"/download/{filename_pdf}"
+            "pdf_url": f"/download/{filename_pdf}",
+            "file_name": file.filename
         })
+
     except Exception as e:
         print("API /api/upload error:", e)
         traceback.print_exc()
