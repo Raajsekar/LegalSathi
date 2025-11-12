@@ -3,43 +3,52 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 import os, uuid, time
 
-# AI client import - adjust if using different SDK
+# AI client import
 try:
     from groq import Groq
 except Exception:
     Groq = None
 
-# file utils and extractors
 from pdf_utils import text_to_pdf
-import fitz  # pymupdf
+import fitz  # PyMuPDF
 import docx
 from pymongo import MongoClient
 
-# Load environment
+# Load environment variables
 load_dotenv()
 
-# Configuration from env
+# --- Configuration ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 MONGODB_URI = os.getenv("MONGODB_URI", "")
-ALLOWED_ORIGIN = os.getenv("FRONTEND_ORIGIN", "*")  # set to your Vercel domain in production
+ALLOWED_ORIGIN = os.getenv("FRONTEND_ORIGIN", "*")
 
-# Initialize app
+# --- Initialize Flask ---
 app = Flask(__name__)
 CORS(app, origins=[ALLOWED_ORIGIN])
 
-# Initialize AI client (Groq)
+# --- Initialize Groq client ---
 if Groq is None:
-    print("Warning: Groq SDK not installed or import failed. Set up SDK appropriately.")
+    print("⚠️ Groq SDK not installed or failed to import.")
 else:
     client = Groq(api_key=GROQ_API_KEY)
 
-# Initialize MongoDB
-if not MONGODB_URI:
-    print("Warning: MONGODB_URI not provided. History/save features will fail locally.")
-mongo = MongoClient(MONGODB_URI) if MONGODB_URI else None
-db = mongo["legalsathi"] if mongo else None
-chats = db["chats"] if db else None
+# --- Initialize MongoDB ---
+mongo = None
+db = None
+chats = None
 
+if MONGODB_URI:
+    try:
+        mongo = MongoClient(MONGODB_URI)
+        db = mongo["legalsathi"]
+        chats = db["chats"]
+        print("✅ MongoDB connected successfully.")
+    except Exception as e:
+        print("❌ MongoDB connection failed:", e)
+else:
+    print("⚠️ MONGODB_URI not provided. History/save features will not work.")
+
+# --- File Folders ---
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs("generated_pdfs", exist_ok=True)
@@ -47,9 +56,6 @@ os.makedirs("generated_pdfs", exist_ok=True)
 
 # --- AI helper ---
 def ask_ai(context, user_input):
-    """
-    Send prompt to Groq model and return text. Adjust model name if needed.
-    """
     if Groq is None:
         return "⚠️ AI SDK not configured on server. Contact admin."
 
@@ -67,7 +73,8 @@ def ask_ai(context, user_input):
         print("Groq Error:", e)
         return "⚠️ Sorry, something went wrong with the AI."
 
-# --- File Text Extractors ---
+
+# --- File extractors ---
 def extract_pdf_text(filepath):
     text = ""
     with fitz.open(filepath) as pdf:
@@ -79,10 +86,12 @@ def extract_docx_text(filepath):
     doc = docx.Document(filepath)
     return "\n".join([p.text for p in doc.paragraphs])
 
+
 # --- Routes ---
 @app.route("/")
 def home():
     return "⚖️ LegalSathi backend active"
+
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
@@ -92,7 +101,6 @@ def chat():
     if not user_id or not message:
         return jsonify({"error": "Missing user_id or message"}), 400
 
-    # Simple intent-based context selection
     msg_lower = message.lower()
     if "contract" in msg_lower:
         context = "Draft a detailed Indian legal contract:"
@@ -103,14 +111,10 @@ def chat():
     else:
         context = "Provide helpful Indian legal assistance:"
 
-    # Call AI
     reply = ask_ai(context, message)
-
-    # Save PDF
     pdf_filename = f"{uuid.uuid4().hex[:8]}.pdf"
     pdf_path = text_to_pdf(reply, pdf_filename)
 
-    # Save chat to MongoDB (if configured)
     try:
         if chats is not None:
             chats.insert_one({
@@ -128,6 +132,7 @@ def chat():
         "pdf_url": f"/download/{pdf_filename}"
     })
 
+
 @app.route("/api/upload", methods=["POST"])
 def upload_file():
     user_id = request.form.get("user_id")
@@ -140,7 +145,6 @@ def upload_file():
     filepath = os.path.join(UPLOAD_FOLDER, filename)
     file.save(filepath)
 
-    # Extract text
     lower = filename.lower()
     if lower.endswith(".pdf"):
         content = extract_pdf_text(filepath)
@@ -152,22 +156,18 @@ def upload_file():
     else:
         return jsonify({"error": "Unsupported file type"}), 400
 
-    # Select context
-    if task == "summarize":
-        context = "Summarize this legal document clearly for an Indian audience:"
-    else:
-        context = "Explain this legal document in plain language for Indian users:"
+    context = (
+        "Summarize this legal document clearly for an Indian audience:"
+        if task == "summarize"
+        else "Explain this legal document in plain language for Indian users:"
+    )
 
-    # Limit input length to keep costs predictable
-    content_trim = content[:6000]
-    reply = ask_ai(context, content_trim)
-
+    reply = ask_ai(context, content[:6000])
     filename_pdf = f"{uuid.uuid4().hex[:8]}.pdf"
     pdf_path = text_to_pdf(reply, filename_pdf)
 
-    # Save chat / upload record
     try:
-        if chats:
+        if chats is not None:
             chats.insert_one({
                 "user_id": user_id,
                 "file_name": file.filename,
@@ -183,6 +183,7 @@ def upload_file():
         "pdf_url": f"/download/{filename_pdf}"
     })
 
+
 @app.route("/download/<filename>")
 def download(filename):
     path = os.path.join("generated_pdfs", filename)
@@ -190,14 +191,20 @@ def download(filename):
         return send_file(path, as_attachment=True)
     return "File not found", 404
 
+
 @app.route("/api/history/<user_id>")
 def history(user_id):
     if chats is None:
         return jsonify([])
-    docs = list(chats.find({"user_id": user_id}).sort("timestamp", -1))
-    for d in docs:
-        d["_id"] = str(d["_id"])
-    return jsonify(docs)
+    try:
+        docs = list(chats.find({"user_id": user_id}).sort("timestamp", -1))
+        for d in docs:
+            d["_id"] = str(d["_id"])
+        return jsonify(docs)
+    except Exception as e:
+        print("History fetch error:", e)
+        return jsonify([])
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
