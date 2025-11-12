@@ -394,23 +394,20 @@ def upload_file():
             return jsonify({"error": "Unsupported file type"}), 400
 
         # Decide AI task
+        # Decide AI task (generic summarization)
         if task == "summarize":
           context = (
-        "Summarize this Indian legal document with bullet points. "
-        "Include obligations, rights, key risks, deadlines, and jurisdiction."
-    )
-        elif task == "contract":
-          context = (
-           "Use the contents of this document to draft a formal Indian legal contract. "
-        "Structure it into numbered clauses: 1. Parties, 2. Purpose, 3. Term, 4. Fees/Payment, 5. Confidentiality, "
-        "6. Termination, 7. Governing Law. End with signature section."
+        "Summarize the uploaded document in clear, concise language. "
+        "Highlight key ideas, structure, important facts, and insights. "
+        "If it's a legal or business document, mention important terms or clauses, "
+        "but if it's any other type (research, article, notes, etc.), summarize naturally "
+        "without legal assumptions."
     )
         else:
           context = (
-        "Explain this Indian legal document in simple terms, highlighting obligations, rights, and likely implications. "
-        "Reference relevant Indian laws or acts if applicable."
+        "Explain this document in simple terms, outlining the key points, sections, "
+        "and practical meaning for an average reader. Keep it factual and easy to read."
     )
-
 
         # Process content (trim for safety)
         content_trim = content[:8000]
