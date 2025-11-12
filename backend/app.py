@@ -42,20 +42,20 @@ db = None
 chats = None
 if MONGODB_URI:
     try:
-        # Ensure password characters are properly encoded (if user pasted raw)
-        # NOTE: If your password contains @ or special chars, user should url-encode before setting MONGODB_URI.
         mongo = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
-        # quick ping
-        mongo.admin.command('ping')
+        mongo.admin.command("ping")
         db = mongo.get_database("legalsathi")
         chats = db.get_collection("chats")
     except Exception as e:
         print("MongoDB connection warning:", e)
-        mongo = None
-        db = None
-        chats = None
+        mongo = db = chats = None
 else:
     print("Warning: MONGODB_URI not provided. History will not be saved.")
+
+# Prevent boolean truth testing error
+if db is not None and chats is None:
+    chats = db.get_collection("chats")
+
 
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -241,6 +241,42 @@ def history(user_id):
         print("API /api/history error:", e)
         traceback.print_exc()
         return jsonify([])
+    
+@app.route("/api/library/<user_id>")
+def library(user_id):
+    """Return uploaded document summaries for that user"""
+    try:
+        if chats is None:
+            return jsonify([])
+        files = list(chats.find(
+            {"user_id": user_id, "file_name": {"$exists": True}}
+        ).sort("timestamp", -1))
+        for f in files:
+            f["_id"] = str(f["_id"])
+        return jsonify(files)
+    except Exception as e:
+        print("API /api/library error:", e)
+        traceback.print_exc()
+        return jsonify([])
+
+@app.route("/api/newchat/<user_id>", methods=["POST"])
+def new_chat(user_id):
+    """Create a new empty chat thread."""
+    try:
+        if chats is not None:
+            chats.insert_one({
+                "user_id": user_id,
+                "message": "",
+                "reply": "",
+                "pdf": None,
+                "timestamp": time.time(),
+            })
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        print("API /api/newchat error:", e)
+        traceback.print_exc()
+        return jsonify({"error": "failed"}), 500
+
 
 
 if __name__ == "__main__":
