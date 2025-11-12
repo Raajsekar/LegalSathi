@@ -1,26 +1,19 @@
 import React from "react";
 
-export default function ChatMessage({ chat }) {
-  const copyText = () => {
-    navigator.clipboard.writeText(chat.reply);
-    alert("Copied to clipboard!");
-  };
+function Bubble({ who, text }) {
+  const cls = who === "user"
+    ? "self-end bg-blue-600 text-white p-3 rounded-lg max-w-[70%] whitespace-pre-wrap"
+    : "self-start bg-[#0b1720] text-gray-200 p-3 rounded-lg border border-gray-800 max-w-[70%] whitespace-pre-wrap";
+  return <div className={cls}>{text}</div>;
+}
 
+export default function ChatMessage({ chat }) {
+  if (!chat) return null;
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
-      <div className="bg-gray-800 p-4 rounded-md shadow">
-        <div className="font-semibold text-blue-400">You:</div>
-        <div>{chat.message}</div>
-      </div>
-      <div className="bg-gray-700 p-4 rounded-md shadow relative">
-        <div className="font-semibold text-green-400">LegalSathi:</div>
-        <div className="whitespace-pre-wrap">{chat.reply}</div>
-        <button
-          onClick={copyText}
-          className="absolute top-2 right-2 bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded text-sm"
-        >
-          Copy
-        </button>
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col items-start gap-3">
+        <Bubble who="user" text={chat.message} />
+        <Bubble who="ai" text={chat.reply} />
       </div>
     </div>
   );

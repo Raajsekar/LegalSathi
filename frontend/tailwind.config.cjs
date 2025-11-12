@@ -3,11 +3,7 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        primary: "#0ea5a4",
-        accent: "#7c3aed"
-      },
-      fontFamily: {
-        inter: ['Inter', 'system-ui', 'sans-serif']
+        'app-bg': '#0b0b0d'
       }
     },
   },

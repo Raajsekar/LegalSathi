@@ -1,5 +1,4 @@
 import React from "react";
-import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
 import { useAuthState } from "react-firebase-hooks/auth";
 import { auth } from "./firebase";
 import Login from "./pages/login";
@@ -11,12 +10,5 @@ export default function App() {
 
   if (loading) return <Loader />;
 
-  return (
-    <Router>
-      <Routes>
-        <Route path="/" element={user ? <Chat /> : <Navigate to="/login" />} />
-        <Route path="/login" element={!user ? <Login /> : <Navigate to="/" />} />
-      </Routes>
-    </Router>
-  );
+  return user ? <Chat /> : <Login />;
 }
