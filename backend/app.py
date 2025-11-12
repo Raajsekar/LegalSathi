@@ -3,7 +3,10 @@ from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os, uuid, time, urllib.parse, traceback
-
+from bson.objectid import ObjectId
+from flask import stream_with_context
+import json
+import time
 # AI SDK import (Groq)
 try:
     from groq import Groq
@@ -102,12 +105,192 @@ def extract_docx_text(filepath):
     doc = docx.Document(filepath)
     return "\n".join([p.text for p in doc.paragraphs])
 
+# --- Conversation helpers ---
+def create_conversation(user_id, title="New conversation"):
+    conv = {
+        "user_id": user_id,
+        "title": title,
+        "created_at": time.time(),
+        "updated_at": time.time()
+    }
+    res = db.get_collection("conversations").insert_one(conv)
+    conv["_id"] = str(res.inserted_id)
+    return conv
+
+def add_message(conv_id, role, content):
+    msg = {
+        "conv_id": ObjectId(conv_id),
+        "role": role,
+        "content": content,
+        "timestamp": time.time()
+    }
+    db.get_collection("messages").insert_one(msg)
+
+def build_context(conv_id, max_messages=12):
+    """
+    Returns list of dicts for system/user messages suitable to include with AI call.
+    We'll include last N messages from the conversation.
+    """
+    msgs = list(db.get_collection("messages")
+                .find({"conv_id": ObjectId(conv_id)})
+                .sort("timestamp", -1)
+                .limit(max_messages))
+    msgs = list(reversed(msgs))
+    # convert to simple list:
+    return [{"role": m["role"], "content": m["content"]} for m in msgs]
+
+def simulate_stream(text, chunk_size=30, delay=0.03):
+    """
+    Yield the text in small chunks (fallback if AI SDK has no streaming).
+    chunk_size is characters per chunk.
+    """
+    i = 0
+    while i < len(text):
+        chunk = text[i:i+chunk_size]
+        i += chunk_size
+        time.sleep(delay)  # short pause so frontend gets streaming feel
+        yield chunk
+
 
 # --- Routes ---
 @app.route("/")
 def home():
     return "⚖️ LegalSathi backend active"
 
+@app.route("/api/stream_chat", methods=["POST"])
+def stream_chat():
+    """
+    Streams AI reply tokens back to the client as a text/event-stream-like chunked response.
+    Client expects a newline-delimited stream of JSON chunks.
+    """
+    try:
+        data = request.get_json(force=True)
+        user_id = data.get("user_id")
+        message = data.get("message", "").strip()
+        conv_id = data.get("conv_id")  # optional; if None create new conv
+
+        if not user_id or not message:
+            return jsonify({"error": "Missing user_id or message"}), 400
+
+        # Create conversation if needed
+        if not conv_id:
+            conv = create_conversation(user_id, title=message[:50] or "Conversation")
+            conv_id = conv["_id"]
+        else:
+            # verify conv belongs to user
+            conv_doc = db.get_collection("conversations").find_one({"_id": ObjectId(conv_id)})
+            if not conv_doc or conv_doc.get("user_id") != user_id:
+                return jsonify({"error": "Invalid conversation id"}), 403
+
+        # save user message
+        add_message(conv_id, "user", message)
+
+        # build context (previous messages)
+        context_msgs = build_context(conv_id, max_messages=12)
+
+        # choose context system prompt based on message
+        msg_lower = message.lower()
+        if "agreement" in msg_lower or "contract" in msg_lower or "draft" in msg_lower:
+            system_prompt = "Draft a detailed Indian legal agreement with clear clauses, parties, duration, payment terms, liability, termination, and governing law. Use professional Indian legal language."
+        elif "summarize" in msg_lower or "highlight" in msg_lower:
+            system_prompt = "Summarize this Indian legal document and highlight the main points, obligations, deadlines, and risks."
+        else:
+            system_prompt = "You are LegalSathi, an Indian legal assistant. Provide professional, lawful responses."
+
+        # Prepare system/user messages for AI
+        messages_for_ai = [{"role": "system", "content": system_prompt}]
+        messages_for_ai.extend(context_msgs)
+        messages_for_ai.append({"role": "user", "content": message})
+
+        # Define generator to stream
+        def generate():
+            # Try SDK streaming if available
+            try:
+                # If Groq client supports streaming, use it. PSEUDO:
+                if hasattr(client.chat.completions, "stream") :
+                    for event in client.chat.completions.stream(
+                        model="llama-3.1-8b-instant",
+                        messages=messages_for_ai
+                    ):
+                        # event handling depends on SDK output shape; adapt as needed
+                        chunk_text = getattr(event, "delta", "") or event
+                        # send JSON chunk per line
+                        yield json.dumps({"chunk": chunk_text}) + "\n"
+                    # When finished, you might get final message in event
+                    # Save final assistant message (you must reconstruct final_text)
+                    # (If SDK provides full, use that.)
+                    final_text = ""  # set properly if SDK returns final content
+                else:
+                    # Fallback: call full completion (blocking) then stream substrings
+                    completion = client.chat.completions.create(
+                        model="llama-3.1-8b-instant",
+                        messages=messages_for_ai,
+                    )
+                    final_text = completion.choices[0].message.content.strip()
+                    for chunk in simulate_stream(final_text):
+                        yield json.dumps({"chunk": chunk}) + "\n"
+            except Exception as e:
+                # Fallback: try to compute full reply with ask_ai()
+                try:
+                    final_text = ask_ai(system_prompt, message)
+                    for chunk in simulate_stream(final_text):
+                        yield json.dumps({"chunk": chunk}) + "\n"
+                except Exception as e2:
+                    yield json.dumps({"error": "AI error"}) + "\n"
+
+            # After streaming all chunks, save assistant message to DB
+            try:
+                add_message(conv_id, "assistant", final_text)
+                # update conv updated_at
+                db.get_collection("conversations").update_one({"_id": ObjectId(conv_id)}, {"$set": {"updated_at": time.time(), "title": final_text[:80]}})
+            except Exception as e:
+                print("Could not save assistant message:", e)
+
+            # send final signal
+            yield json.dumps({"done": True, "conv_id": conv_id}) + "\n"
+
+        # Return a streaming response (text/event-stream style)
+        return Response(stream_with_context(generate()), mimetype="text/plain; charset=utf-8")
+    except Exception as e:
+        print("stream_chat error:", e)
+        traceback.print_exc()
+        return jsonify({"error": "internal server error"}), 500
+
+@app.route("/api/conversations/<user_id>")
+def get_conversations(user_id):
+    try:
+        convs = list(db.get_collection("conversations").find({"user_id": user_id}).sort("updated_at", -1))
+        for c in convs:
+            c["_id"] = str(c["_id"])
+        return jsonify(convs)
+    except Exception as e:
+        print("get_conversations error:", e)
+        return jsonify([])
+
+@app.route("/api/conversation/<conv_id>")
+def get_conversation(conv_id):
+    try:
+        msgs = list(db.get_collection("messages").find({"conv_id": ObjectId(conv_id)}).sort("timestamp", 1))
+        out = []
+        for m in msgs:
+            m["_id"] = str(m["_id"])
+            m["conv_id"] = str(m["conv_id"])
+            out.append(m)
+        return jsonify(out)
+    except Exception as e:
+        print("get_conversation error:", e)
+        return jsonify([])
+
+@app.route("/api/files/<user_id>")
+def list_files(user_id):
+    try:
+        docs = list(db.get_collection("file_records").find({"user_id": user_id}).sort("timestamp", -1))
+        for d in docs:
+            d["_id"] = str(d["_id"])
+        return jsonify(docs)
+    except Exception as e:
+        print("list_files error:", e)
+        return jsonify([])
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
@@ -157,7 +340,6 @@ def chat():
         traceback.print_exc()
         return jsonify({"error": "Internal server error"}), 500
 
-
 @app.route("/api/upload", methods=["POST"])
 def upload_file():
     try:
@@ -167,12 +349,12 @@ def upload_file():
         if not user_id or not file:
             return jsonify({"error": "Missing user_id or file"}), 400
 
-        # Save file
+        # Save uploaded file
         filename = f"{uuid.uuid4().hex}_{file.filename}"
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         file.save(filepath)
 
-        # Extract text
+        # Extract text content
         lower = filename.lower()
         if lower.endswith(".pdf"):
             content = extract_pdf_text(filepath)
@@ -184,20 +366,21 @@ def upload_file():
         else:
             return jsonify({"error": "Unsupported file type"}), 400
 
-        # Select context
+        # Decide AI task
         if task == "summarize":
             context = "Summarize this legal document clearly for an Indian audience and highlight main points and obligations."
         else:
             context = "Explain this legal document in plain language and list legal implications for Indian users."
 
-        # Limit input length to keep costs predictable
+        # Process content (trim for safety)
         content_trim = content[:8000]
         reply = ask_ai(context, content_trim)
 
+        # Generate a downloadable PDF of AI reply
         filename_pdf = f"{uuid.uuid4().hex[:8]}.pdf"
         pdf_path = text_to_pdf(reply, filename_pdf)
 
-        # Save chat / upload record
+        # Save chat record for user
         try:
             if chats is not None:
                 chats.insert_one({
@@ -210,6 +393,19 @@ def upload_file():
         except Exception as e:
             print("Mongo save error:", e)
 
+        # ✅ Save file record for Library
+        try:
+            db.get_collection("file_records").insert_one({
+                "user_id": user_id,
+                "original_name": file.filename,
+                "stored_path": filepath,
+                "pdf": filename_pdf,
+                "timestamp": time.time()
+            })
+        except Exception as e:
+            print("file_records insert error:", e)
+
+        # Return AI reply
         return jsonify({
             "reply": reply,
             "pdf_url": f"/download/{filename_pdf}"
@@ -278,6 +474,10 @@ def new_chat(user_id):
         return jsonify({"error": "failed"}), 500
 
 
+@app.errorhandler(500)
+def internal_error(error):
+    print("500 error:", error)
+    return jsonify({"error": "Internal server error"}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
