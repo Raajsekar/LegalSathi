@@ -89,20 +89,20 @@ export default function Login() {
           )}
 
           <input
-            type="email"
-            placeholder="Email"
-            className="w-full p-3 bg-[#0e0e10] border border-gray-700 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
+  type="email"
+  placeholder="Email"
+  className="w-full p-3 bg-[#0f0f12] border border-gray-700 rounded-lg text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
+  value={email}
+  onChange={(e) => setEmail(e.target.value)}
+/>
 
           <input
-            type="password"
-            placeholder="Password"
-            className="w-full p-3 bg-[#0e0e10] border border-gray-700 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
+  type="password"
+  placeholder="Password"
+  className="w-full p-3 bg-[#0f0f12] border border-gray-700 rounded-lg text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
+  value={password}
+  onChange={(e) => setPassword(e.target.value)}
+/>
 
           {error && <p className="text-sm text-red-400">{error}</p>}
 
