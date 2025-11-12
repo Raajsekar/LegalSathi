@@ -1,11 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import { useAuthState } from "react-firebase-hooks/auth";
 import { auth } from "../firebase";
-import Sidebar from "../components/Sidebar";
-import ChatMessage from "../components/ChatMessage";
-import Loader from "../components/Loader";
-import { Clipboard, Download, Plus } from "lucide-react";
+import { LogOut, PlusCircle, FileUp, Search, Folder } from "lucide-react";
 
 const API_BASE = import.meta.env.VITE_API_BASE;
 
@@ -18,12 +15,15 @@ export default function Chat() {
   const [loading, setLoading] = useState(false);
   const [file, setFile] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [copied, setCopied] = useState(false);
+  const [showLibrary, setShowLibrary] = useState(false);
+  const scrollRef = useRef(null);
 
-  // Fetch user chats from backend
+  // fetch chats on login
+  useEffect(() => { if (user) fetchChats(); }, [user]);
+
   useEffect(() => {
-    if (user) fetchChats();
-  }, [user]);
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [activeChat]);
 
   const fetchChats = async () => {
     try {
@@ -53,7 +53,7 @@ export default function Chat() {
       setMessage("");
     } catch (e) {
       console.error("Send message error", e);
-      alert("Failed to send message. Try again later.");
+      alert("Failed to send message");
     }
     setLoading(false);
   };
@@ -80,25 +80,9 @@ export default function Chat() {
       setFile(null);
     } catch (e) {
       console.error("Upload error", e);
-      alert("Upload failed. Try again.");
+      alert("Upload failed");
     }
     setLoading(false);
-  };
-
-  const handleCopy = async (text) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch (e) {
-      console.error("Clipboard error", e);
-    }
-  };
-
-  const handleNewChat = () => {
-    setActiveChat(null);
-    setMessage("");
-    setReply("");
   };
 
   const filteredChats = chats.filter(
@@ -107,119 +91,123 @@ export default function Chat() {
       c.reply?.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  return (
-    <div className="flex h-screen bg-[#0b1120] text-gray-100">
-      {/* Sidebar */}
-      <Sidebar
-        chats={filteredChats}
-        setActiveChat={setActiveChat}
-        setSearchQuery={setSearchQuery}
-        fetchChats={fetchChats}
-        user={user}
-        onNewChat={handleNewChat}
-      />
+  const Bubble = ({ who, text }) => (
+    <div
+      className={`p-4 max-w-[75%] whitespace-pre-wrap leading-relaxed rounded-2xl ${
+        who === "user"
+          ? "self-end bg-blue-600 text-white"
+          : "self-start bg-[#1a1a1d] text-gray-200 border border-gray-700"
+      }`}
+    >
+      {text}
+    </div>
+  );
 
-      {/* Chat Window */}
-      <div className="flex flex-col flex-grow">
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800 bg-[#0f172a]">
-          <h2 className="text-lg font-semibold text-cyan-400">⚖️ LegalSathi</h2>
+  return (
+    <div className="flex h-screen bg-[#0b0b0d] text-gray-100">
+      {/* Sidebar */}
+      <aside className="w-72 bg-[#101012] border-r border-gray-800 flex flex-col">
+        <div className="p-4 border-b border-gray-800 flex justify-between items-center">
+          <h1 className="text-lg font-semibold">⚖️ LegalSathi</h1>
           <button
-            onClick={() => auth.signOut()}
-            className="bg-red-600 hover:bg-red-500 px-3 py-1 rounded text-sm"
+            onClick={() => {
+              setActiveChat(null);
+              setReply("");
+            }}
+            className="hover:text-blue-400"
           >
-            Logout
+            <PlusCircle size={20} />
           </button>
         </div>
 
-        {/* Messages Section */}
-        <div className="flex-grow overflow-y-auto p-6 space-y-4">
-          {activeChat ? (
-            <div className="space-y-6">
-              <div className="bg-[#13203a] p-4 rounded-lg">
-                <div className="font-semibold text-blue-300 mb-2">You:</div>
-                <p className="text-gray-100 whitespace-pre-wrap">{activeChat.message}</p>
-              </div>
+        <div className="px-3 py-2">
+          <div className="relative">
+            <Search size={16} className="absolute left-3 top-3 text-gray-400" />
+            <input
+              placeholder="Search chats"
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-8 pr-3 py-2 bg-[#161618] text-sm rounded-lg border border-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-600"
+            />
+          </div>
+        </div>
 
-              <div className="bg-[#0d152a] p-4 rounded-lg border border-gray-700 relative">
-                <div className="font-semibold text-cyan-300 mb-2">LegalSathi:</div>
-                <p className="whitespace-pre-wrap leading-relaxed text-gray-200">
-                  {activeChat.reply}
-                </p>
-
-                {/* Action buttons */}
-                <div className="absolute top-3 right-3 flex gap-2">
-                  <button
-                    onClick={() => handleCopy(activeChat.reply)}
-                    className="p-1.5 bg-gray-800 hover:bg-gray-700 rounded"
-                    title="Copy"
-                  >
-                    <Clipboard size={18} />
-                  </button>
-                  <a
-                    href={activeChat.pdf}
-                    download
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="p-1.5 bg-gray-800 hover:bg-gray-700 rounded"
-                    title="Download PDF"
-                  >
-                    <Download size={18} />
-                  </a>
-                </div>
+        <div className="flex-1 overflow-y-auto space-y-2 p-3">
+          {filteredChats.map((c, idx) => (
+            <button
+              key={idx}
+              onClick={() => setActiveChat(c)}
+              className={`w-full text-left p-3 rounded-lg ${
+                activeChat === c ? "bg-[#1f1f23]" : "hover:bg-[#151517]"
+              }`}
+            >
+              <div className="text-sm truncate">{c.message || "Upload summary"}</div>
+              <div className="text-xs text-gray-500">
+                {new Date(c.timestamp || Date.now()).toLocaleString()}
               </div>
-              {copied && (
-                <div className="text-green-400 text-sm animate-pulse">Copied to clipboard!</div>
-              )}
+            </button>
+          ))}
+        </div>
+
+        <div className="p-4 border-t border-gray-800 flex items-center justify-between text-sm">
+          <button
+            onClick={() => setShowLibrary(!showLibrary)}
+            className="flex items-center gap-2 hover:text-blue-400"
+          >
+            <Folder size={16} /> Library
+          </button>
+          <button onClick={() => auth.signOut()} className="flex items-center gap-2 hover:text-red-500">
+            <LogOut size={16} /> Logout
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Chat Window */}
+      <main className="flex flex-col flex-grow">
+        <div className="flex-1 overflow-y-auto p-8 space-y-6 flex flex-col" ref={scrollRef}>
+          {!activeChat ? (
+            <div className="text-center text-gray-400 mt-20">
+              {showLibrary
+                ? "📂 Your uploaded documents and summaries will appear here."
+                : "Start a new chat or upload a document 📄"}
             </div>
           ) : (
-            <div className="text-gray-500 text-center mt-20">
-              Start a conversation or upload a document 📄
-            </div>
+            <>
+              <Bubble who="user" text={activeChat.message} />
+              <Bubble who="ai" text={activeChat.reply} />
+            </>
           )}
         </div>
 
-        {/* Input area */}
-        <div className="border-t border-gray-800 bg-[#0f172a] p-4">
-          <textarea
-            className="w-full bg-[#0b1120] text-white placeholder-gray-400 border border-gray-700 rounded p-3 resize-none h-24 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:shadow-[0_0_10px_#0ea5a4]"
-            placeholder="Ask LegalSathi to draft an agreement, summarize a legal case, or explain Indian laws..."
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-          />
-          <div className="flex items-center justify-between mt-3">
-            <div className="flex items-center gap-3">
-              <input
-                type="file"
-                accept=".pdf,.docx,.txt"
-                onChange={(e) => setFile(e.target.files[0])}
-                className="text-sm text-gray-400"
-              />
+        <div className="border-t border-gray-800 bg-[#0f0f10] p-4">
+          <div className="flex items-center justify-between gap-3">
+            <textarea
+              className="flex-grow bg-[#1a1a1d] border border-gray-700 rounded-xl p-3 resize-none text-white placeholder-gray-400 h-20 focus:ring-1 focus:ring-blue-600 focus:outline-none"
+              placeholder="Ask LegalSathi..."
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+            />
+            <div className="flex flex-col gap-2">
+              <label className="bg-gray-800 hover:bg-gray-700 cursor-pointer text-xs text-gray-300 py-2 px-3 rounded-lg flex items-center gap-2">
+                <FileUp size={14} />
+                <input
+                  type="file"
+                  accept=".pdf,.docx,.txt"
+                  onChange={(e) => setFile(e.target.files[0])}
+                  className="hidden"
+                />
+                Upload
+              </label>
               <button
-                onClick={handleUpload}
-                className="bg-green-600 hover:bg-green-500 px-3 py-1 rounded text-sm"
-              >
-                Upload & Summarize
-              </button>
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={handleNewChat}
-                className="bg-gray-700 hover:bg-gray-600 px-3 py-2 rounded flex items-center gap-1 text-sm"
-              >
-                <Plus size={16} /> New Chat
-              </button>
-              <button
-                onClick={sendMessage}
+                onClick={file ? handleUpload : sendMessage}
                 disabled={loading}
-                className="bg-cyan-600 hover:bg-cyan-500 px-5 py-2 rounded text-white transition"
+                className="bg-blue-600 hover:bg-blue-500 rounded-lg py-2 text-sm"
               >
-                {loading ? "Thinking..." : "Send"}
+                {loading ? "Thinking..." : file ? "Summarize" : "Send"}
               </button>
             </div>
           </div>
         </div>
-      </div>
+      </main>
     </div>
   );
 }
