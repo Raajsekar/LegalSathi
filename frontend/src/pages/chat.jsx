@@ -1,107 +1,157 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useEffect, useState } from "react";
 import axios from "axios";
-import { signOut } from "firebase/auth";
-import { auth } from "../firebase";
 import { useAuthState } from "react-firebase-hooks/auth";
-import MessageBubble from "../components/bubble";
-import TypingDots from "../components/TypingDots";
+import { auth } from "../firebase";
+import Sidebar from "../components/Sidebar";
+import ChatMessage from "../components/ChatMessage";
+import Loader from "../components/Loader";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:10000";
+const API_BASE = import.meta.env.VITE_API_BASE;
 
 export default function Chat() {
   const [user] = useAuthState(auth);
   const [message, setMessage] = useState("");
-  const [chat, setChat] = useState([]);
+  const [reply, setReply] = useState("");
+  const [chats, setChats] = useState([]);
+  const [activeChat, setActiveChat] = useState(null);
   const [loading, setLoading] = useState(false);
-  const chatEndRef = useRef(null);
+  const [file, setFile] = useState(null);
+  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
-    if (user) {
-      axios.get(`${API_BASE}/api/history/${user.uid}`).then((res) => {
-        const formatted = res.data.map((d) => ({
-          userText: d.message,
-          aiText: d.reply,
-        }));
-        setChat(formatted.reverse());
-      });
-    }
+    if (user) fetchChats();
   }, [user]);
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chat]);
+  const fetchChats = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/api/history/${user.uid}`);
+      setChats(res.data || []);
+    } catch (e) {
+      console.error("Fetch chats error", e);
+    }
+  };
 
-  const handleSend = async () => {
+  const sendMessage = async () => {
     if (!message.trim()) return;
-    const userMsg = message;
-    setChat((prev) => [...prev, { userText: userMsg }]);
-    setMessage("");
     setLoading(true);
     try {
       const res = await axios.post(`${API_BASE}/api/chat`, {
         user_id: user.uid,
-        message: userMsg,
+        message,
       });
-      setChat((prev) => [
-        ...prev.slice(0, -1),
-        { userText: userMsg, aiText: res.data.reply },
-      ]);
-    } catch {
-      setChat((prev) => [
-        ...prev,
-        { aiText: "⚠️ Something went wrong. Please try again later." },
-      ]);
+      setReply(res.data.reply);
+      const newChat = {
+        message,
+        reply: res.data.reply,
+        pdf: res.data.pdf_url,
+        timestamp: Date.now(),
+      };
+      setChats([newChat, ...chats]);
+      setActiveChat(newChat);
+      setMessage("");
+    } catch (e) {
+      console.error("Send message error", e);
+      alert("Failed to send message");
     }
     setLoading(false);
   };
 
+  const handleUpload = async () => {
+    if (!file) return;
+    const fd = new FormData();
+    fd.append("user_id", user.uid);
+    fd.append("task", "summarize");
+    fd.append("file", file);
+    setLoading(true);
+    try {
+      const res = await axios.post(`${API_BASE}/api/upload`, fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      const newChat = {
+        message: `📄 Uploaded: ${file.name}`,
+        reply: res.data.reply,
+        pdf: res.data.pdf_url,
+        timestamp: Date.now(),
+      };
+      setChats([newChat, ...chats]);
+      setActiveChat(newChat);
+      setReply(res.data.reply);
+      setFile(null);
+    } catch (e) {
+      console.error("Upload error", e);
+      alert("Upload failed");
+    }
+    setLoading(false);
+  };
+
+  const filteredChats = chats.filter(
+    (c) =>
+      c.message?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      c.reply?.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
   return (
-    <div className="flex flex-col min-h-screen bg-gradient-to-b from-gray-900 via-gray-950 to-black text-white transition-all duration-300">
-      <header className="p-4 border-b border-gray-800 flex justify-between items-center bg-gray-950/80 backdrop-blur-md">
-        <h1 className="text-xl font-semibold text-blue-400">⚖️ LegalSathi AI</h1>
-        <div className="flex items-center gap-3">
-          <img
-            src={user?.photoURL}
-            alt="User Avatar"
-            className="w-8 h-8 rounded-full border border-gray-600"
-          />
+    <div className="flex h-screen bg-gray-900 text-white">
+      <Sidebar
+        chats={filteredChats}
+        setActiveChat={setActiveChat}
+        setSearchQuery={setSearchQuery}
+        fetchChats={fetchChats}
+        user={user}
+      />
+      <div className="flex flex-col flex-grow">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700 bg-gray-800">
+          <h2 className="text-lg font-semibold">⚖️ LegalSathi</h2>
           <button
-            onClick={() => signOut(auth)}
-            className="bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm"
+            onClick={() => auth.signOut()}
+            className="bg-red-600 hover:bg-red-500 px-3 py-1 rounded text-sm"
           >
             Logout
           </button>
         </div>
-      </header>
 
-      <main className="flex-1 overflow-y-auto p-6 space-y-2">
-        {chat.map((msg, i) => (
-          <React.Fragment key={i}>
-            {msg.userText && <MessageBubble text={msg.userText} isUser />}
-            {msg.aiText && <MessageBubble text={msg.aiText} />}
-          </React.Fragment>
-        ))}
-        {loading && <TypingDots />}
-        <div ref={chatEndRef} />
-      </main>
+        <div className="flex-grow overflow-y-auto p-6 space-y-4">
+          {activeChat ? (
+            <ChatMessage chat={activeChat} />
+          ) : (
+            <div className="text-gray-400 text-center mt-20">
+              Start a conversation or upload a file 📄
+            </div>
+          )}
+        </div>
 
-      <footer className="p-4 border-t border-gray-800 bg-gray-950/80 backdrop-blur-md">
-        <div className="flex gap-2">
-          <input
+        <div className="border-t border-gray-700 bg-gray-800 p-4">
+          <textarea
+            className="w-full bg-gray-900 border border-gray-700 rounded p-3 text-white resize-none h-24"
+            placeholder="Ask LegalSathi..."
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSend()}
-            placeholder="Ask LegalSathi about a law or contract..."
-            className="flex-1 bg-gray-800 p-3 rounded-lg focus:outline-none text-white placeholder-gray-400"
           />
-          <button
-            onClick={handleSend}
-            className="bg-blue-600 hover:bg-blue-700 px-5 py-2 rounded-lg font-semibold shadow-md hover:shadow-blue-500/30 transition-all"
-          >
-            Send
-          </button>
+          <div className="flex items-center justify-between mt-2">
+            <div className="flex items-center gap-2">
+              <input
+                type="file"
+                accept=".pdf,.docx,.txt"
+                onChange={(e) => setFile(e.target.files[0])}
+                className="text-sm text-gray-400"
+              />
+              <button
+                onClick={handleUpload}
+                className="bg-green-600 hover:bg-green-500 px-3 py-1 rounded text-sm"
+              >
+                Upload & Summarize
+              </button>
+            </div>
+            <button
+              onClick={sendMessage}
+              disabled={loading}
+              className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded"
+            >
+              {loading ? "Thinking..." : "Send"}
+            </button>
+          </div>
         </div>
-      </footer>
+      </div>
     </div>
   );
 }
