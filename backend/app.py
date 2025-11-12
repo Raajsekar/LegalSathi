@@ -303,8 +303,14 @@ def chat():
 
         msg_lower = message.lower()
         # improved context selection
+        
         if "agreement" in msg_lower or "contract" in msg_lower or "draft" in msg_lower:
-            context = "Draft a detailed Indian legal agreement with clear clauses, parties, duration, payment terms, liability, termination, and governing law. Use professional Indian legal language."
+            context = (
+        "Draft a detailed Indian legal agreement in numbered clauses. "
+        "Each section must have a heading (e.g., 1. Parties, 2. Term, 3. Rent, 4. Obligations, 5. Termination, 6. Governing Law). "
+        "End with signature lines for both parties. Use professional Indian legal language."
+    )
+
         elif "summarize" in msg_lower or "highlight" in msg_lower or "key points" in msg_lower:
             context = "Summarize this Indian legal document and highlight the main points, obligations, deadlines, and risks. Provide a short actionable summary and bullet highlights."
         elif "law" in msg_lower or "act" in msg_lower or "explain" in msg_lower:
@@ -339,6 +345,27 @@ def chat():
         print("API /api/chat error:", e)
         traceback.print_exc()
         return jsonify({"error": "Internal server error"}), 500
+@app.route("/api/search/<user_id>")
+def search_chats(user_id):
+    """Search across user messages and replies"""
+    try:
+        q = request.args.get("q", "").strip()
+        if not q:
+            return jsonify([])
+        if chats is None:
+            return jsonify([])
+        results = list(
+            chats.find(
+                {"user_id": user_id, "$text": {"$search": q}},
+                {"score": {"$meta": "textScore"}}
+            ).sort([("score", {"$meta": "textScore"})])
+        )
+        for r in results:
+            r["_id"] = str(r["_id"])
+        return jsonify(results)
+    except Exception as e:
+        print("API /api/search error:", e)
+        return jsonify([])
 
 @app.route("/api/upload", methods=["POST"])
 def upload_file():
@@ -368,9 +395,22 @@ def upload_file():
 
         # Decide AI task
         if task == "summarize":
-            context = "Summarize this legal document clearly for an Indian audience and highlight main points and obligations."
+          context = (
+        "Summarize this Indian legal document with bullet points. "
+        "Include obligations, rights, key risks, deadlines, and jurisdiction."
+    )
+        elif task == "contract":
+          context = (
+           "Use the contents of this document to draft a formal Indian legal contract. "
+        "Structure it into numbered clauses: 1. Parties, 2. Purpose, 3. Term, 4. Fees/Payment, 5. Confidentiality, "
+        "6. Termination, 7. Governing Law. End with signature section."
+    )
         else:
-            context = "Explain this legal document in plain language and list legal implications for Indian users."
+          context = (
+        "Explain this Indian legal document in simple terms, highlighting obligations, rights, and likely implications. "
+        "Reference relevant Indian laws or acts if applicable."
+    )
+
 
         # Process content (trim for safety)
         content_trim = content[:8000]
