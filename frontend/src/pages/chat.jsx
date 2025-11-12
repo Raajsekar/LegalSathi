@@ -3,7 +3,7 @@ import axios from "axios";
 import { signOut } from "firebase/auth";
 import { auth } from "../firebase";
 import { useAuthState } from "react-firebase-hooks/auth";
-import MessageBubble from "../components/MessageBubble";
+import MessageBubble from "../components/bubble";
 import TypingDots from "../components/TypingDots";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:10000";

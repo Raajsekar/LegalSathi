@@ -2,8 +2,8 @@ import React from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
 import { useAuthState } from "react-firebase-hooks/auth";
 import { auth } from "./firebase";
-import Login from "./pages/Login";
-import Chat from "./pages/Chat";
+import Login from "./pages/login";
+import Chat from "./pages/chat";
 import Loader from "./components/Loader";
 
 export default function App() {
