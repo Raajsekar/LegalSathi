@@ -112,7 +112,7 @@ def chat():
 
     # Save chat to MongoDB (if configured)
     try:
-        if chats:
+        if chats is not None:
             chats.insert_one({
                 "user_id": user_id,
                 "message": message,
@@ -192,7 +192,7 @@ def download(filename):
 
 @app.route("/api/history/<user_id>")
 def history(user_id):
-    if not chats:
+    if chats is None:
         return jsonify([])
     docs = list(chats.find({"user_id": user_id}).sort("timestamp", -1))
     for d in docs:
