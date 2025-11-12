@@ -71,15 +71,35 @@ export default function Chat() {
         message: task === "contract" ? `Draft a contract:\n\n${message}` : message,
       });
 
-      const newChat = {
-        message,
-        reply: res.data.reply,
-        pdf_url: res.data.pdf_url || res.data.pdf || null,
-        timestamp: Date.now() / 1000,
-      };
-      setChats((prev) => [newChat, ...prev]);
-      setActiveChat(newChat);
-      setMessage("");
+      const newMessage = {
+  message,
+  reply: res.data.reply,
+  pdf_url: res.data.pdf_url || res.data.pdf || null,
+  timestamp: Date.now() / 1000,
+};
+
+// if a chat already exists, append to it
+setChats((prev) => {
+  if (activeChat) {
+    const updated = [...prev];
+    updated[0] = {
+      ...updated[0],
+      history: [
+        ...(updated[0].history || []),
+        { user: message, ai: res.data.reply },
+      ],
+    };
+    return updated;
+  }
+  return [newMessage, ...prev];
+});
+
+setActiveChat((prev) => ({
+  ...prev,
+  history: [...(prev?.history || []), { user: message, ai: res.data.reply }],
+}));
+setMessage("");
+
     } catch (e) {
       console.error("Send error", e);
       alert("Failed to send message — try again.");
@@ -109,10 +129,31 @@ export default function Chat() {
         timestamp: Date.now() / 1000,
       };
 
-      setChats((prev) => [newChat, ...prev]);
-      setActiveChat(newChat);
-      setFile(null);
-      setFileName("");
+      setChats((prev) => {
+  if (activeChat) {
+    const updated = [...prev];
+    updated[0] = {
+      ...updated[0],
+      history: [
+        ...(updated[0].history || []),
+        { user: `📄 ${file.name}`, ai: res.data.reply },
+      ],
+    };
+    return updated;
+  }
+  return [newChat, ...prev];
+});
+
+setActiveChat((prev) => ({
+  ...prev,
+  history: [
+    ...(prev?.history || []),
+    { user: `📄 ${file.name}`, ai: res.data.reply },
+  ],
+}));
+setFile(null);
+setFileName("");
+
     } catch (e) {
       console.error("Upload error", e);
       alert("Upload failed — ensure PDF/DOCX/TXT and try again.");
@@ -298,46 +339,55 @@ export default function Chat() {
         </header>
 
         <section className="flex-1 overflow-y-auto p-6" ref={scrollRef}>
-          {!activeChat ? (
-            <div className="text-gray-500 text-center mt-28">
-              Pick a chat or start a new one.
-            </div>
-          ) : (
-            <article className="max-w-3xl mx-auto">
-              <div className="mb-4 text-sm text-blue-400 text-right">
-                {activeChat.message}
-              </div>
+  {!activeChat ? (
+    <div className="text-gray-500 text-center mt-28">
+      Pick a chat or start a new one.
+    </div>
+  ) : (
+    <article className="max-w-3xl mx-auto space-y-4">
+      {/* Display full conversation history if available */}
+      {(activeChat.history || [
+        { user: activeChat.message, ai: activeChat.reply },
+      ]).map((turn, i) => (
+        <div key={i} className="space-y-1">
+          <div className="text-right text-blue-400 text-sm">
+            {turn.user}
+          </div>
 
-              <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap">
-                {activeChat.reply || "No reply yet."}
-              </div>
+          <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap">
+            {turn.ai || "No reply yet."}
+          </div>
+        </div>
+      ))}
 
-              <div className="flex items-center gap-3 mt-3">
-                {activeChat.pdf_url && (
-                  <a
-                    href={
-                      activeChat.pdf_url.startsWith("http")
-                        ? activeChat.pdf_url
-                        : `${API_BASE}${activeChat.pdf_url}`
-                    }
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-blue-400 hover:underline flex items-center gap-2"
-                  >
-                    <FileText size={16} /> Download PDF
-                  </a>
-                )}
+      {/* PDF download + Copy actions (kept exactly same) */}
+      <div className="flex items-center gap-3 mt-3">
+        {activeChat.pdf_url && (
+          <a
+            href={
+              activeChat.pdf_url.startsWith("http")
+                ? activeChat.pdf_url
+                : `${API_BASE}${activeChat.pdf_url}`
+            }
+            target="_blank"
+            rel="noreferrer"
+            className="text-blue-400 hover:underline flex items-center gap-2"
+          >
+            <FileText size={16} /> Download PDF
+          </a>
+        )}
 
-                <button
-                  onClick={() => handleCopy(activeChat.reply)}
-                  className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2"
-                >
-                  <Copy size={14} /> Copy
-                </button>
-              </div>
-            </article>
-          )}
-        </section>
+        <button
+          onClick={() => handleCopy(activeChat.reply)}
+          className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2"
+        >
+          <Copy size={14} /> Copy
+        </button>
+      </div>
+    </article>
+  )}
+</section>
+
 
         <footer className="p-4 border-t border-gray-800 bg-[#0f1012]">
           <div className="max-w-6xl mx-auto flex items-center gap-3">
