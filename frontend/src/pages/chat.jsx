@@ -19,16 +19,19 @@ export default function Chat() {
   const [activeChat, setActiveChat] = useState(null);
   const scrollRef = useRef(null);
 
+  // 🔹 Load chat history
   useEffect(() => {
     if (user) fetchChats();
   }, [user]);
 
+  // 🔹 Auto-scroll to bottom on new chat
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [chats]);
 
+  // 🔹 Fetch all chat history
   const fetchChats = async () => {
     try {
       const res = await axios.get(`${API_BASE}/api/history/${user.uid}`);
@@ -38,6 +41,7 @@ export default function Chat() {
     }
   };
 
+  // 🔹 Send a message
   const sendMessage = async () => {
     if (!message.trim()) return;
     setLoading(true);
@@ -63,6 +67,7 @@ export default function Chat() {
     }
   };
 
+  // 🔹 Upload and summarize file
   const handleUpload = async () => {
     if (!file) return;
     setLoading(true);
@@ -91,6 +96,7 @@ export default function Chat() {
     }
   };
 
+  // 🔹 Copy AI reply
   const handleCopy = (text) => {
     copy(text || "");
     alert("Copied to clipboard ✅");
@@ -113,6 +119,7 @@ export default function Chat() {
           </button>
         </div>
 
+        {/* Chat history list */}
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
           {chats.length === 0 && (
             <div className="text-gray-500 text-sm px-2">No chats yet.</div>
@@ -132,6 +139,7 @@ export default function Chat() {
           ))}
         </div>
 
+        {/* Logout */}
         <div className="p-4 border-t border-gray-800">
           <button
             onClick={() => auth.signOut()}
