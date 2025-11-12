@@ -1,7 +1,0 @@
-Flask
-twilio
-python-dotenv
-groq
-reportlab
-streamlit
-python-docx

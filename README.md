@@ -1,36 +1,22 @@
-# ⚖️ LegalSathi — AI WhatsApp Legal Assistant
+# LegalSathi — AI Legal Assistant (Phase 1)
 
-**LegalSathi** is an AI-powered WhatsApp chatbot that helps users draft, summarize, and understand legal documents — directly through WhatsApp.  
-Built with **Flask**, **Twilio**, and **Groq’s Llama 3.1** model, it can automatically generate professional legal agreements and send them as **PDFs**.
+This repo contains a production-ready Phase 1 for LegalSathi:
+- Backend: Flask + Groq + MongoDB (deployed to Render)
+- Frontend: React + Tailwind + Firebase Auth (deployed to Vercel)
+- Features: Chat-based AI, file upload (PDF/DOCX/TXT), PDF generation, chat history.
 
----
+> **Important**: Do NOT commit secrets. Put keys in Render / Vercel environment variables.
 
-## 🚀 Features
+## Quick Start (local)
 
-- 🧾 **Draft Legal Contracts** — Generate rental, sales, or business agreements in seconds.  
-- 🧠 **Summarize Legal Documents** — Simplify complex legal text into clear explanations.  
-- 💬 **WhatsApp Integration** — Chat directly via WhatsApp using Twilio’s sandbox.  
-- 📄 **Automatic PDF Generation** — Each response can be saved as a downloadable PDF.  
-- ☁️ **Deployed on Render.com** — Runs 24/7 without the need for ngrok.
-
----
-
-## 🧩 Tech Stack
-
-| Component | Technology |
-|------------|-------------|
-| **Backend** | Flask (Python) |
-| **AI Model** | Llama 3.1 (Groq API) |
-| **Messaging** | Twilio WhatsApp API |
-| **PDF Generation** | ReportLab |
-| **Deployment** | Render.com |
-| **Version Control** | Git + GitHub |
-
----
-
-## ⚙️ Setup Instructions
-
-### 1️⃣ Clone the Repository
+### Backend
 ```bash
-git clone https://github.com/<your-username>/LegalSathi.git
-cd LegalSathi
+cd backend
+python -m venv venv
+# Windows:
+# .\venv\Scripts\Activate.ps1
+# mac/linux:
+# source venv/bin/activate
+pip install -r requirements.txt
+# create backend/.env with GROQ_API_KEY and MONGODB_URI
+python app.py

@@ -1,0 +1,9 @@
+Flask
+flask-cors
+groq
+python-dotenv
+pymongo
+reportlab
+pymupdf
+python-docx
+gunicorn
