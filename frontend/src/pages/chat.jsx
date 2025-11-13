@@ -46,9 +46,10 @@ export default function Chat() {
   const scrollRef = useRef(null);
   const recognitionRef = useRef(null);
 
+  // --- init: fetch chats and speech detection ---
   useEffect(() => {
     if (user) fetchChats();
-    // detect speech API
+
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRecognition) {
       setSupportsSpeech(true);
@@ -57,7 +58,7 @@ export default function Chat() {
       r.interimResults = true;
       r.lang = "en-IN";
       recognitionRef.current = r;
-      // handlers
+
       r.onresult = (ev) => {
         let interim = "";
         let final = "";
@@ -66,21 +67,19 @@ export default function Chat() {
           if (res.isFinal) final += res[0].transcript;
           else interim += res[0].transcript;
         }
-        // show interim in message textarea
         setMessage((prev) => {
-          // if there was a final, replace; otherwise show interim appended to prev base
-          // To avoid messing up user-typed text, if interim present show as interim appended to prev
-          // We'll keep it simple: if final present set message to previous + final
-          if (final) return (prev ? prev + " " : "") + final;
-          // else show interim overlay by appending (but not committing)
-          return prev.replace(/¶INTERIM:.*/, "") + (interim ? ` ¶INTERIM:${interim}` : "");
+          // keep previously typed content, append final if present
+          const base = prev.replace(/¶INTERIM:.*$/, "");
+          if (final) return (base ? base + " " : "") + final;
+          return base + (interim ? ` ¶INTERIM:${interim}` : "");
         });
       };
+
       r.onend = () => {
         setListening(false);
-        // cleanup interim marker if any
         setMessage((m) => m.replace(/¶INTERIM:.*$/, "").trim());
       };
+
       r.onerror = (e) => {
         console.warn("Speech error", e);
         setListening(false);
@@ -89,19 +88,28 @@ export default function Chat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
+  // autoscroll to bottom of active chat area
   useEffect(() => {
     if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      // small timeout helps after DOM update
+      setTimeout(() => {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }, 80);
     }
   }, [activeChat, chats]);
 
-  // Fetch chats
+  // --- API calls ---
   const fetchChats = async () => {
     try {
       const res = await axios.get(`${API_BASE}/api/history/${user.uid}`);
       const items = res.data || [];
-      // ensure each item has history array if not present
-      const normalized = items.map((it) => ({ ...it, history: it.history || (it.message ? [{ user: it.message, ai: it.reply }] : []) }));
+      // normalize to include history array so UI is consistent
+      const normalized = items.map((it) => ({
+        ...it,
+        history:
+          it.history ||
+          (it.message ? [{ user: it.message, ai: it.reply }] : []),
+      }));
       setChats(normalized);
       if (normalized.length > 0) setActiveChat(normalized[0]);
     } catch (e) {
@@ -109,42 +117,27 @@ export default function Chat() {
     }
   };
 
-  // start/stop speech recognition (textarea mic)
-  const toggleListen = () => {
-    if (!recognitionRef.current) return alert("Speech recognition not supported in this browser.");
-    if (listening) {
-      recognitionRef.current.stop();
-      setListening(false);
-    } else {
-      // remove interim marker before starting
-      setMessage((m) => m.replace(/¶INTERIM:.*$/, ""));
-      recognitionRef.current.start();
-      setListening(true);
-    }
-  };
-
-  // floating mic: continuous dictate then stop (same recognition used)
-  const handleFloatingMic = async () => {
-    toggleListen();
-  };
-
-  // POST /api/chat (text prompt)
+  // --- SEND TEXT MESSAGE ---
   const sendMessage = async () => {
-    // strip interim tokens (if any)
+    // strip interim overlay and trim
     const cleanMessage = message.replace(/¶INTERIM:.*$/, "").trim();
     if (!cleanMessage) return alert("Please type a question or prompt.");
     setLoading(true);
+
     try {
-      const res = await axios.post(`${API_BASE}/api/chat`, {
+      const payload = {
         user_id: user.uid,
         message: task === "contract" ? `Draft a contract:\n\n${cleanMessage}` : cleanMessage,
-      });
+      };
+
+      const res = await axios.post(`${API_BASE}/api/chat`, payload);
 
       const aiReply = res.data.reply;
       const pdf_url = res.data.pdf_url || res.data.pdf || null;
 
-      // Build chat entry
+      // Build entry object
       const newEntry = {
+        _id: res.data.conv_id || `local-${Date.now()}`, // backend may supply conv_id on streaming
         message: cleanMessage,
         reply: aiReply,
         pdf_url,
@@ -152,12 +145,11 @@ export default function Chat() {
         history: [{ user: cleanMessage, ai: aiReply }],
       };
 
-      // Append to activeChat if exists (so previous conversation continues) else create new
+      // If there is an active chat with _id, append to it; else prepend new entry.
       setChats((prev) => {
         if (activeChat && activeChat._id) {
-          // find and update active chat in list (by reference _id if exists)
           const updated = prev.slice();
-          const idx = updated.findIndex((c) => c._id && activeChat._id && c._id === activeChat._id);
+          const idx = updated.findIndex((c) => c._id === activeChat._id);
           if (idx !== -1) {
             updated[idx] = {
               ...updated[idx],
@@ -165,15 +157,12 @@ export default function Chat() {
               reply: aiReply,
               pdf_url,
             };
-            // move that updated chat to top
+            // move updated to top
             const moved = updated.splice(idx, 1)[0];
             return [moved, ...updated];
-          } else {
-            // no match: just prepend
-            return [newEntry, ...prev];
           }
         }
-        // no activeChat or it is placeholder, prepend
+        // if activeChat is placeholder or doesn't exist, just prepend newEntry
         return [newEntry, ...prev];
       });
 
@@ -198,7 +187,7 @@ export default function Chat() {
     }
   };
 
-  // POST /api/upload (file upload + summarise/explain)
+  // --- FILE UPLOAD (summarize / explain) ---
   const handleUpload = async () => {
     if (!file) return alert("Please select a file first.");
     setLoading(true);
@@ -216,6 +205,7 @@ export default function Chat() {
       const pdf_url = res.data.pdf_url || res.data.pdf || null;
 
       const newEntry = {
+        _id: res.data.conv_id || `local-${Date.now()}`,
         message: `📄 ${file.name}`,
         reply: aiReply,
         pdf_url,
@@ -225,9 +215,8 @@ export default function Chat() {
 
       setChats((prev) => {
         if (activeChat && activeChat._id) {
-          // append into existing active chat
           const updated = prev.slice();
-          const idx = updated.findIndex((c) => c._id && activeChat._id && c._id === activeChat._id);
+          const idx = updated.findIndex((c) => c._id === activeChat._id);
           if (idx !== -1) {
             updated[idx] = {
               ...updated[idx],
@@ -237,8 +226,6 @@ export default function Chat() {
             };
             const moved = updated.splice(idx, 1)[0];
             return [moved, ...updated];
-          } else {
-            return [newEntry, ...prev];
           }
         }
         return [newEntry, ...prev];
@@ -266,6 +253,7 @@ export default function Chat() {
     }
   };
 
+  // --- file input change (show filename) ---
   const onFileChange = (e) => {
     const f = e.target.files?.[0] ?? null;
     setFile(f);
@@ -285,6 +273,7 @@ export default function Chat() {
   // Reset conversation: create placeholder new chat but do NOT delete backend history
   const handleResetConversation = () => {
     const placeholder = {
+      _id: `placeholder-${Date.now()}`,
       message: "New conversation",
       reply: "Start by asking a question or uploading a file.",
       timestamp: Date.now() / 1000,
@@ -295,7 +284,7 @@ export default function Chat() {
     setActiveChat(placeholder);
   };
 
-  // GST tools
+  // --- GST tools ---
   const calculateGst = async () => {
     if (!gstAmount) return alert("Enter an amount first.");
     try {
@@ -326,6 +315,24 @@ export default function Chat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showGstPanel]);
 
+  // --- speech handling helpers ---
+  const toggleListen = () => {
+    if (!recognitionRef.current) return alert("Speech recognition not supported in this browser.");
+    if (listening) {
+      recognitionRef.current.stop();
+      setListening(false);
+    } else {
+      setMessage((m) => m.replace(/¶INTERIM:.*$/, ""));
+      recognitionRef.current.start();
+      setListening(true);
+    }
+  };
+
+  const handleFloatingMic = () => {
+    toggleListen();
+  };
+
+  // Filtered chats for Sidebar search
   const filtered = chats.filter(
     (c) =>
       (c.message && c.message.toLowerCase().includes(searchQuery.toLowerCase())) ||
@@ -371,33 +378,24 @@ export default function Chat() {
 
         <div className="flex-1 overflow-y-auto p-2 space-y-2">
           {filtered.length === 0 && (
-            <div className="text-gray-500 px-3 text-sm">
-              No chats yet — start a conversation.
-            </div>
+            <div className="text-gray-500 px-3 text-sm">No chats yet — start a conversation.</div>
           )}
 
           {filtered.map((c, i) => (
             <div
               key={i}
               onClick={() => setActiveChat(c)}
-              className={`p-3 rounded-lg cursor-pointer transition-colors text-sm ${
-                activeChat === c ? "bg-[#1b1c20]" : "bg-[#121214] hover:bg-[#18181b]"
-              }`}
+              className={`p-3 rounded-lg cursor-pointer transition-colors text-sm ${activeChat === c ? "bg-[#1b1c20]" : "bg-[#121214] hover:bg-[#18181b]"}`}
             >
               <div className="truncate font-medium">{c.message || "Untitled"}</div>
-              <div className="text-xs text-gray-500 mt-1 line-clamp-2">
-                {(c.reply || "").substring(0, 140)}
-              </div>
+              <div className="text-xs text-gray-500 mt-1 line-clamp-2">{(c.reply || "").substring(0, 140)}</div>
             </div>
           ))}
         </div>
 
         <div className="p-3 border-t border-gray-800 flex items-center gap-2">
           <div className="flex-1 text-xs text-gray-400">
-            Signed in as{" "}
-            <strong className="text-gray-200">
-              {user?.email || user?.displayName || "User"}
-            </strong>
+            Signed in as <strong className="text-gray-200">{user?.email || user?.displayName || "User"}</strong>
           </div>
           <button onClick={() => auth.signOut()} className="text-red-400 hover:text-red-300">
             <LogOut size={16} />
@@ -411,12 +409,7 @@ export default function Chat() {
           <div className="flex items-center gap-4">
             <h2 className="text-lg font-semibold">Chat</h2>
 
-            <select
-              value={task}
-              onChange={(e) => setTask(e.target.value)}
-              className="bg-[#121214] border border-gray-700 text-sm text-gray-200 px-2 py-1 rounded"
-              title="Choose task"
-            >
+            <select value={task} onChange={(e) => setTask(e.target.value)} className="bg-[#121214] border border-gray-700 text-sm text-gray-200 px-2 py-1 rounded" title="Choose task">
               <option value="summarize">Summarize Document</option>
               <option value="contract">Draft Contract / Agreement</option>
               <option value="explain">Explain Clause / Law</option>
@@ -424,15 +417,10 @@ export default function Chat() {
           </div>
 
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => setShowGstPanel(!showGstPanel)}
-              className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2"
-            >
+            <button onClick={() => setShowGstPanel(!showGstPanel)} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2">
               <Calculator size={14} /> GST / Tax Tools
             </button>
-            <button onClick={() => fetchChats()} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700">
-              Refresh
-            </button>
+            <button onClick={() => fetchChats()} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700">Refresh</button>
           </div>
         </header>
 
@@ -444,25 +432,15 @@ export default function Chat() {
               {/* Conversation history */}
               {(activeChat.history || [{ user: activeChat.message, ai: activeChat.reply }]).map((turn, i) => (
                 <div key={i} className="space-y-1">
-                  <div className="text-right text-blue-400 text-sm">
-                    {turn.user}
-                  </div>
-
-                  <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap reply-box">
-                    {turn.ai || "No reply yet."}
-                  </div>
+                  <div className="text-right text-blue-400 text-sm">{turn.user}</div>
+                  <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap reply-box">{turn.ai || "No reply yet."}</div>
                 </div>
               ))}
 
               {/* PDF download + Copy actions */}
               <div className="flex items-center gap-3 mt-3">
                 {activeChat.pdf_url && (
-                  <a
-                    href={activeChat.pdf_url.startsWith("http") ? activeChat.pdf_url : `${API_BASE}${activeChat.pdf_url}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-blue-400 hover:underline flex items-center gap-2"
-                  >
+                  <a href={activeChat.pdf_url.startsWith("http") ? activeChat.pdf_url : `${API_BASE}${activeChat.pdf_url}`} target="_blank" rel="noreferrer" className="text-blue-400 hover:underline flex items-center gap-2">
                     <FileText size={16} /> Download PDF
                   </a>
                 )}
@@ -494,11 +472,7 @@ export default function Chat() {
 
               {/* inline mic inside textarea corner */}
               {supportsSpeech && (
-                <button
-                  title={listening ? "Stop recording" : "Record voice"}
-                  onClick={toggleListen}
-                  className={`textarea-mic ${listening ? "listening" : ""}`}
-                >
+                <button title={listening ? "Stop recording" : "Record voice"} onClick={toggleListen} className={`textarea-mic ${listening ? "listening" : ""}`}>
                   {listening ? <MicOff size={16} /> : <Mic size={16} />}
                 </button>
               )}
@@ -509,9 +483,7 @@ export default function Chat() {
                 {loading ? "Processing..." : file ? (task === "summarize" ? "Summarize" : task === "contract" ? "Draft" : "Explain") : "Send"}
               </button>
 
-              <button onClick={() => { setMessage(""); setFile(null); setFileName(""); }} className="text-xs text-gray-400 underline">
-                Clear composer
-              </button>
+              <button onClick={() => { setMessage(""); setFile(null); setFileName(""); }} className="text-xs text-gray-400 underline">Clear composer</button>
             </div>
           </div>
 
@@ -524,11 +496,7 @@ export default function Chat() {
 
       {/* floating mic bubble */}
       {supportsSpeech && (
-        <button
-          className={`floating-mic ${listening ? "listening" : ""}`}
-          onClick={handleFloatingMic}
-          title={listening ? "Stop listening" : "Open voice input"}
-        >
+        <button className={`floating-mic ${listening ? "listening" : ""}`} onClick={handleFloatingMic} title={listening ? "Stop listening" : "Open voice input"}>
           {listening ? <MicOff size={20} /> : <Mic size={20} />}
           <span className="mic-wave" aria-hidden />
         </button>
@@ -538,12 +506,8 @@ export default function Chat() {
       {showGstPanel && (
         <div className="fixed bottom-6 right-6 bg-[#111113] border border-gray-700 rounded-xl p-5 w-96 shadow-2xl text-gray-100 z-50 animate-fade-in">
           <div className="flex justify-between items-center mb-3">
-            <h3 className="font-semibold text-lg flex items-center gap-2">
-              <Calculator size={16} /> GST / Tax Tools
-            </h3>
-            <button onClick={() => setShowGstPanel(false)} className="text-gray-400 hover:text-gray-200">
-              <X size={16} />
-            </button>
+            <h3 className="font-semibold text-lg flex items-center gap-2"><Calculator size={16} /> GST / Tax Tools</h3>
+            <button onClick={() => setShowGstPanel(false)} className="text-gray-400 hover:text-gray-200"><X size={16} /></button>
           </div>
 
           <div className="space-y-2">
@@ -555,14 +519,8 @@ export default function Chat() {
                 <option value="18">18%</option>
                 <option value="28">28%</option>
               </select>
-              <label className="text-xs flex items-center gap-1">
-                <input type="checkbox" checked={inclusive} onChange={(e) => setInclusive(e.target.checked)} />
-                Inclusive
-              </label>
-              <label className="text-xs flex items-center gap-1">
-                <input type="checkbox" checked={interstate} onChange={(e) => setInterstate(e.target.checked)} />
-                Interstate
-              </label>
+              <label className="text-xs flex items-center gap-1"><input type="checkbox" checked={inclusive} onChange={(e) => setInclusive(e.target.checked)} /> Inclusive</label>
+              <label className="text-xs flex items-center gap-1"><input type="checkbox" checked={interstate} onChange={(e) => setInterstate(e.target.checked)} /> Interstate</label>
             </div>
 
             <button onClick={calculateGst} className="w-full bg-blue-600 hover:bg-blue-500 rounded py-2 mt-2 text-sm">Calculate</button>
@@ -571,14 +529,10 @@ export default function Chat() {
               <div className="bg-[#1a1a1d] border border-gray-700 rounded p-3 mt-3 text-sm">
                 <div>Base Amount: ₹{gstResult.base_amount}</div>
                 <div>GST ({gstResult.rate_percent}%): ₹{gstResult.gst_amount}</div>
-                {gstResult.igst ? (
-                  <div>IGST: ₹{gstResult.igst}</div>
-                ) : (
-                  <>
-                    <div>CGST: ₹{gstResult.cgst}</div>
-                    <div>SGST: ₹{gstResult.sgst}</div>
-                  </>
-                )}
+                {gstResult.igst ? <div>IGST: ₹{gstResult.igst}</div> : <>
+                  <div>CGST: ₹{gstResult.cgst}</div>
+                  <div>SGST: ₹{gstResult.sgst}</div>
+                </>}
                 <div className="mt-2 font-semibold text-blue-400">Total: ₹{gstResult.total_amount}</div>
               </div>
             )}
@@ -587,9 +541,7 @@ export default function Chat() {
               <div className="mt-4 border-t border-gray-700 pt-3">
                 <div className="text-sm font-semibold mb-1 text-gray-300">GST / Tax Tips:</div>
                 <ul className="space-y-1 text-xs text-gray-400 max-h-32 overflow-y-auto">
-                  {gstTips.map((t, i) => (
-                    <li key={i}>• {t.title}: {t.description}</li>
-                  ))}
+                  {gstTips.map((t, i) => <li key={i}>• {t.title}: {t.description}</li>)}
                 </ul>
               </div>
             )}
