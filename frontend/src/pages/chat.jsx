@@ -418,11 +418,11 @@ export default function Chat() {
   const handleResetConversation = () => {
     const placeholder = {
       _id: `placeholder-${Date.now()}`,
-      message: "New conversation",
-      reply: "Start by asking a question or uploading a file.",
+      message: "",
+      reply: "",
       timestamp: Date.now() / 1000,
       pdf_url: null,
-      history: [{ user: "New conversation", ai: "Start by asking a question or uploading a file." }],
+      history: [{ user: "", ai: "" }],
     };
     setChats((prev) => [placeholder, ...prev]);
     setActiveChat(placeholder);
