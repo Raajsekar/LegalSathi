@@ -603,17 +603,16 @@ export default function Chat() {
             <article className="max-w-3xl mx-auto space-y-4">
               {activeChat.history?.map((turn, i) => (
   <div key={i} className="space-y-1">
-    {/* user message */}
     <div className="text-right text-blue-400 text-sm">
       {turn.user}
     </div>
 
-    {/* AI reply */}
     <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap reply-box">
       {turn.ai || "No reply yet."}
     </div>
   </div>
 ))}
+
 
               <div className="flex items-center gap-3 mt-3">
                 {activeChat.pdf_url && (
