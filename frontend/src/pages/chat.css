@@ -1,3 +1,5 @@
+/* chat.css */
+
 /* Chat layout + ChatGPT-like sizing + dark theme adjustments */
 
 /* container tweaks */
@@ -64,6 +66,8 @@
   border: 1px solid transparent;
   color: #9ca3af;
   cursor: pointer;
+  transition: transform 120ms ease, background 120ms ease, color 120ms ease;
+  z-index: 5;
 }
 .textarea-mic:hover {
   background: rgba(255,255,255,0.02);
@@ -73,43 +77,15 @@
   color: #ef4444;
   background: rgba(239,68,68,0.06);
   border-color: rgba(239,68,68,0.12);
+  transform: scale(1.06);
+  box-shadow: 0 6px 18px rgba(239,68,68,0.06);
+  animation: mic-pulse 1s infinite;
 }
 
-/* Floating mic bubble */
-.floating-mic {
-  position: fixed;
-  right: 28px;
-  bottom: 28px;
-  background: linear-gradient(180deg, #0b0b0d, #111113);
-  border: 1px solid rgba(255,255,255,0.04);
-  color: #fff;
-  height: 56px;
-  width: 56px;
-  border-radius: 9999px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 60;
-  box-shadow: 0 6px 24px rgba(2,6,23,0.6);
-  cursor: pointer;
-}
-.floating-mic .mic-wave {
-  position: absolute;
-  width: 56px;
-  height: 56px;
-  border-radius: 9999px;
-  background: radial-gradient(circle at center, rgba(59,130,246,0.06), transparent 40%);
-  opacity: 0.9;
-  transform: scale(0.9);
-}
-.floating-mic.listening {
-  background: linear-gradient(90deg, #7c2aed, #2563eb);
-  animation: floating-pulse 1.6s infinite;
-}
-@keyframes floating-pulse {
-  0% { transform: translateY(0); box-shadow: 0 6px 24px rgba(2,6,23,0.45); }
-  50% { transform: translateY(-3px); box-shadow: 0 10px 30px rgba(2,6,23,0.6); }
-  100% { transform: translateY(0); }
+@keyframes mic-pulse {
+  0% { box-shadow: 0 6px 12px rgba(239,68,68,0.05); transform: scale(1); }
+  50% { box-shadow: 0 12px 28px rgba(239,68,68,0.08); transform: scale(1.08); }
+  100% { box-shadow: 0 6px 12px rgba(239,68,68,0.05); transform: scale(1); }
 }
 
 /* copy toast */
@@ -136,7 +112,6 @@
 @media (max-width: 900px) {
   .w-80 { width: 60px !important; } /* collapse sidebar smaller on tiny screens */
   .composer-textarea { font-size: 14px; }
-  .floating-mic { right: 14px; bottom: 14px; }
 }
 
 /* scrollbar styling */
@@ -161,3 +136,21 @@ a.text-blue-400 { color: #60a5fa; }
 /* minor animation */
 .animate-fade-in { animation: fadeIn 180ms ease-out; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+/* center disclaimer under composer */
+.disclaimer {
+  text-align: center;
+}
+
+/* reply-box adjustments */
+.reply-box {
+  word-break: break-word;
+  background-clip: padding-box;
+  border: 1px solid rgba(255,255,255,0.02);
+}
+
+/* small accessibility focus outline */
+.textarea-mic:focus {
+  outline: 2px solid rgba(96,165,250,0.12);
+  outline-offset: 2px;
+}

@@ -1,4 +1,4 @@
-// force rebuild 1
+// Chat.jsx
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useAuthState } from "react-firebase-hooks/auth";
@@ -46,6 +46,7 @@ export default function Chat() {
 
   const scrollRef = useRef(null);
   const recognitionRef = useRef(null);
+  const interimRef = useRef(""); // store interim between events
 
   // --- init: fetch chats and speech detection ---
   useEffect(() => {
@@ -55,7 +56,7 @@ export default function Chat() {
     if (SpeechRecognition) {
       setSupportsSpeech(true);
       const r = new SpeechRecognition();
-      r.continuous = false;
+      r.continuous = false; // single-shot (we start/stop manually)
       r.interimResults = true;
       r.lang = "en-IN";
       recognitionRef.current = r;
@@ -68,22 +69,32 @@ export default function Chat() {
           if (res.isFinal) final += res[0].transcript;
           else interim += res[0].transcript;
         }
-        setMessage((prev) => {
-          // keep previously typed content, append final if present
-          const base = prev.replace(/¶INTERIM:.*$/, "");
-          if (final) return (base ? base + " " : "") + final;
+
+        // store interim and show in textarea (non-destructive)
+        interimRef.current = interim || "";
+        setMessage((prevBase) => {
+          // keep any previously typed content (without old interim)
+          const base = prevBase.replace(/¶INTERIM:.*$/, "");
+          if (final) {
+            // add final result to base
+            return (base ? base + " " : "") + final;
+          }
+          // show interim appended as invisible marker (so user can continue typing)
           return base + (interim ? ` ¶INTERIM:${interim}` : "");
         });
       };
 
       r.onend = () => {
+        // finalize: remove interim marker (already added to message in onresult if final)
         setListening(false);
         setMessage((m) => m.replace(/¶INTERIM:.*$/, "").trim());
+        interimRef.current = "";
       };
 
       r.onerror = (e) => {
         console.warn("Speech error", e);
         setListening(false);
+        interimRef.current = "";
       };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -92,7 +103,6 @@ export default function Chat() {
   // autoscroll to bottom of active chat area
   useEffect(() => {
     if (scrollRef.current) {
-      // small timeout helps after DOM update
       setTimeout(() => {
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
       }, 80);
@@ -104,12 +114,9 @@ export default function Chat() {
     try {
       const res = await axios.get(`${API_BASE}/api/history/${user.uid}`);
       const items = res.data || [];
-      // normalize to include history array so UI is consistent
       const normalized = items.map((it) => ({
         ...it,
-        history:
-          it.history ||
-          (it.message ? [{ user: it.message, ai: it.reply }] : []),
+        history: it.history || (it.message ? [{ user: it.message, ai: it.reply }] : []),
       }));
       setChats(normalized);
       if (normalized.length > 0) setActiveChat(normalized[0]);
@@ -120,7 +127,6 @@ export default function Chat() {
 
   // --- SEND TEXT MESSAGE ---
   const sendMessage = async () => {
-    // strip interim overlay and trim
     const cleanMessage = message.replace(/¶INTERIM:.*$/, "").trim();
     if (!cleanMessage) return alert("Please type a question or prompt.");
     setLoading(true);
@@ -136,9 +142,8 @@ export default function Chat() {
       const aiReply = res.data.reply;
       const pdf_url = res.data.pdf_url || res.data.pdf || null;
 
-      // Build entry object
       const newEntry = {
-        _id: res.data.conv_id || `local-${Date.now()}`, // backend may supply conv_id on streaming
+        _id: res.data.conv_id || `local-${Date.now()}`,
         message: cleanMessage,
         reply: aiReply,
         pdf_url,
@@ -146,7 +151,6 @@ export default function Chat() {
         history: [{ user: cleanMessage, ai: aiReply }],
       };
 
-      // If there is an active chat with _id, append to it; else prepend new entry.
       setChats((prev) => {
         if (activeChat && activeChat._id) {
           const updated = prev.slice();
@@ -158,12 +162,10 @@ export default function Chat() {
               reply: aiReply,
               pdf_url,
             };
-            // move updated to top
             const moved = updated.splice(idx, 1)[0];
             return [moved, ...updated];
           }
         }
-        // if activeChat is placeholder or doesn't exist, just prepend newEntry
         return [newEntry, ...prev];
       });
 
@@ -316,21 +318,29 @@ export default function Chat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showGstPanel]);
 
-  // --- speech handling helpers ---
-  const toggleListen = () => {
+  // --- speech handling helpers (Hold-to-record) ---
+  const startHoldRecording = () => {
     if (!recognitionRef.current) return alert("Speech recognition not supported in this browser.");
-    if (listening) {
-      recognitionRef.current.stop();
-      setListening(false);
-    } else {
+    try {
+      // remove any interim marker
       setMessage((m) => m.replace(/¶INTERIM:.*$/, ""));
+      interimRef.current = "";
       recognitionRef.current.start();
       setListening(true);
+    } catch (e) {
+      console.warn("Start recording error", e);
     }
   };
 
-  const handleFloatingMic = () => {
-    toggleListen();
+  const stopHoldRecording = () => {
+    if (!recognitionRef.current) return;
+    try {
+      recognitionRef.current.stop();
+      // onend will handle finalizing
+      setListening(false); // immediate visual feedback; onend will reconfirm
+    } catch (e) {
+      console.warn("Stop recording error", e);
+    }
   };
 
   // Filtered chats for Sidebar search
@@ -351,18 +361,10 @@ export default function Chat() {
           </div>
 
           <div className="flex gap-2">
-            <button
-              title="New"
-              onClick={handleResetConversation}
-              className="p-2 rounded hover:bg-gray-800"
-            >
+            <button title="New" onClick={handleResetConversation} className="p-2 rounded hover:bg-gray-800">
               <Plus size={18} />
             </button>
-            <button
-              title="Library"
-              onClick={() => (window.location.pathname = "/library")}
-              className="p-2 rounded hover:bg-gray-800"
-            >
+            <button title="Library" onClick={() => (window.location.pathname = "/library")} className="p-2 rounded hover:bg-gray-800">
               <BookOpen size={18} />
             </button>
           </div>
@@ -430,7 +432,6 @@ export default function Chat() {
             <div className="text-gray-500 text-center mt-28">Pick a chat or start a new one.</div>
           ) : (
             <article className="max-w-3xl mx-auto space-y-4">
-              {/* Conversation history */}
               {(activeChat.history || [{ user: activeChat.message, ai: activeChat.reply }]).map((turn, i) => (
                 <div key={i} className="space-y-1">
                   <div className="text-right text-blue-400 text-sm">{turn.user}</div>
@@ -438,7 +439,6 @@ export default function Chat() {
                 </div>
               ))}
 
-              {/* PDF download + Copy actions */}
               <div className="flex items-center gap-3 mt-3">
                 {activeChat.pdf_url && (
                   <a href={activeChat.pdf_url.startsWith("http") ? activeChat.pdf_url : `${API_BASE}${activeChat.pdf_url}`} target="_blank" rel="noreferrer" className="text-blue-400 hover:underline flex items-center gap-2">
@@ -471,9 +471,17 @@ export default function Chat() {
                 rows={2}
               />
 
-              {/* inline mic inside textarea corner */}
+              {/* inline mic inside textarea corner: hold to record */}
               {supportsSpeech && (
-                <button title={listening ? "Stop recording" : "Record voice"} onClick={toggleListen} className={`textarea-mic ${listening ? "listening" : ""}`}>
+                <button
+                  title={listening ? "Release to stop" : "Hold to record"}
+                  onMouseDown={(e) => { e.preventDefault(); startHoldRecording(); }}
+                  onMouseUp={(e) => { e.preventDefault(); stopHoldRecording(); }}
+                  onMouseLeave={(e) => { /* if user drags out, stop capturing */ if (listening) stopHoldRecording(); }}
+                  onTouchStart={(e) => { e.preventDefault(); startHoldRecording(); }}
+                  onTouchEnd={(e) => { e.preventDefault(); stopHoldRecording(); }}
+                  className={`textarea-mic ${listening ? "listening" : ""}`}
+                >
                   {listening ? <MicOff size={16} /> : <Mic size={16} />}
                 </button>
               )}
@@ -488,20 +496,12 @@ export default function Chat() {
             </div>
           </div>
 
-          {/* disclaimer line */}
-          <div className="max-w-6xl mx-auto mt-3 text-xs text-gray-400">
+          {/* centered disclaimer */}
+          <div className="max-w-6xl mx-auto mt-3 text-xs text-gray-400 disclaimer">
             ⚠️ <strong>LegalSathi can make mistakes.</strong> Check important info and cross-verify before using for legal decisions.
           </div>
         </footer>
       </main>
-
-      {/* floating mic bubble */}
-      {supportsSpeech && (
-        <button className={`floating-mic ${listening ? "listening" : ""}`} onClick={handleFloatingMic} title={listening ? "Stop listening" : "Open voice input"}>
-          {listening ? <MicOff size={20} /> : <Mic size={20} />}
-          <span className="mic-wave" aria-hidden />
-        </button>
-      )}
 
       {/* GST / Tax Tool Panel */}
       {showGstPanel && (
