@@ -6,6 +6,7 @@
 .chat-content {
   background: linear-gradient(180deg, rgba(6,6,7,0.6), rgba(10,10,12,0.6));
   min-height: 0; /* allow flex child scrolling */
+  padding-bottom: 12px;
 }
 
 /* reply box (ai response) */
@@ -34,7 +35,7 @@
 .composer-textarea {
   width: 100%;
   resize: none;
-  padding: 12px 46px 12px 12px;
+  padding: 12px 56px 12px 12px; /* room for mic button */
   border-radius: 8px;
   border: 1px solid #2b2b2f;
   background: #121214;
@@ -56,9 +57,9 @@
   position: absolute;
   right: 10px;
   top: 8px;
-  height: 32px;
-  width: 32px;
-  border-radius: 6px;
+  height: 36px;
+  width: 36px;
+  border-radius: 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -66,7 +67,7 @@
   border: 1px solid transparent;
   color: #9ca3af;
   cursor: pointer;
-  transition: transform 120ms ease, background 120ms ease, color 120ms ease;
+  transition: transform 120ms ease, background 120ms ease, color 120ms ease, box-shadow 120ms ease;
   z-index: 5;
 }
 .textarea-mic:hover {
@@ -80,6 +81,8 @@
   transform: scale(1.06);
   box-shadow: 0 6px 18px rgba(239,68,68,0.06);
   animation: mic-pulse 1s infinite;
+  animation-fill-mode: both;
+  will-change: transform, box-shadow;
 }
 
 @keyframes mic-pulse {
