@@ -338,7 +338,7 @@ setFileName("");
           </div>
         </header>
 
-        <section className="flex-1 overflow-y-auto p-6" ref={scrollRef}>
+<section className="flex-1 overflow-y-auto p-6" ref={scrollRef}>
   {!activeChat ? (
     <div className="text-gray-500 text-center mt-28">
       Pick a chat or start a new one.
@@ -387,6 +387,7 @@ setFileName("");
     </article>
   )}
 </section>
+
 
 
         <footer className="p-4 border-t border-gray-800 bg-[#0f1012]">
