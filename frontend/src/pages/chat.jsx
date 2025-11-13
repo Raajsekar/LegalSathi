@@ -1,6 +1,4 @@
-// TESTING123456
 
-// Chat.jsx
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useAuthState } from "react-firebase-hooks/auth";
