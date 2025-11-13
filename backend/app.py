@@ -378,103 +378,6 @@ def list_files(user_id):
         print("list_files error:", e)
         return jsonify([])
 
-@app.route("/api/chat", methods=["POST"])
-def chat():
-    try:
-        data = request.get_json(force=True)
-        user_id = data.get("user_id")
-        message = data.get("message", "").strip()
-        if not user_id or not message:
-            return jsonify({"error": "Missing user_id or message"}), 400
-
-        # ✅ STEP 1: Fetch recent chat history for context
-        recent_messages = []
-        if chats is not None:
-            try:
-                recent_messages = list(
-                    chats.find({"user_id": user_id})
-                    .sort("timestamp", -1)
-                    .limit(5)
-                )
-                # reverse to chronological order
-                recent_messages = list(reversed(recent_messages))
-            except Exception as e:
-                print("Chat history fetch error:", e)
-
-        # ✅ STEP 2: Build conversation context dynamically
-        history_context = ""
-        for msg in recent_messages:
-            history_context += f"\nUser: {msg.get('message', '')}\nAssistant: {msg.get('reply', '')}\n"
-
-        msg_lower = message.lower()
-
-        # ✅ STEP 3: Intelligent context selection (your same logic + GST logic)
-        if any(word in msg_lower for word in ["gst", "tax", "taxes", "input credit", "itc", "turnover", "tax saving", "composition scheme"]):
-            # GST / Tax-related queries
-            context = (
-                "You are LegalSathi — a professional Indian GST and tax assistant. "
-                "When the user asks about GST, provide accurate calculations, lawful GST planning, and compliance guidance. "
-                "If the user gives an amount and GST rate, calculate CGST/SGST or IGST depending on interstate or intrastate. "
-                "Also provide lawful tax-saving ideas under Indian law (like 80C, 80D, or HRA), "
-                "but clearly state that this is for informational purposes only and not professional advice."
-            )
-        elif "agreement" in msg_lower or "contract" in msg_lower or "draft" in msg_lower:
-            context = (
-                "Draft a detailed Indian legal agreement in numbered clauses. "
-                "Each section must have a heading (e.g., 1. Parties, 2. Term, 3. Rent, 4. Obligations, 5. Termination, 6. Governing Law). "
-                "End with signature lines for both parties. Use professional Indian legal language."
-            )
-        elif "summarize" in msg_lower or "highlight" in msg_lower or "key points" in msg_lower:
-            context = (
-                "Summarize this Indian legal document and highlight the main points, obligations, deadlines, and risks. "
-                "Provide a short actionable summary and bullet highlights."
-            )
-        elif "law" in msg_lower or "act" in msg_lower or "explain" in msg_lower:
-            context = (
-                "Explain Indian legal laws and likely legal implications relevant to this text. "
-                "Mention relevant acts, sections, and practical next steps for an advocate."
-            )
-        else:
-            context = "Provide helpful Indian legal assistance:"
-
-        # ✅ STEP 4: Merge chat history with user’s new message
-        combined_prompt = (
-            f"{context}\n\nConversation so far:\n{history_context}\n\n"
-            f"User's new message:\n{message}\n\n"
-            "Please continue the conversation naturally, referring to previous context when relevant. "
-            "If the topic is GST or tax, provide step-by-step accurate calculations and lawful saving suggestions."
-        )
-
-        # ✅ STEP 5: Generate AI response using existing helper
-        reply = ask_ai("", combined_prompt)
-
-        # ✅ STEP 6: Save PDF as before
-        pdf_filename = f"{uuid.uuid4().hex[:8]}.pdf"
-        pdf_path = text_to_pdf(reply, pdf_filename)
-
-        # ✅ STEP 7: Save chat record (same as your existing logic)
-        try:
-            if chats is not None:
-                chats.insert_one({
-                    "user_id": user_id,
-                    "message": message,
-                    "reply": reply,
-                    "pdf": pdf_filename,
-                    "timestamp": time.time(),
-                })
-        except Exception as e:
-            print("Mongo save error:", e)
-
-        # ✅ STEP 8: Return same structure as before
-        return jsonify({
-            "reply": reply,
-            "pdf_url": f"/download/{pdf_filename}"
-        })
-
-    except Exception as e:
-        print("API /api/chat error:", e)
-        traceback.print_exc()
-        return jsonify({"error": "Internal server error"}), 500
 
 @app.route("/api/search/<user_id>")
 def search_chats(user_id):
@@ -622,19 +525,7 @@ def download(filename):
     return "File not found", 404
 
 
-@app.route("/api/history/<user_id>")
-def history(user_id):
-    try:
-        if chats is None:
-            return jsonify([])
-        docs = list(chats.find({"user_id": user_id}).sort("timestamp", -1))
-        for d in docs:
-            d["_id"] = str(d["_id"])
-        return jsonify(docs)
-    except Exception as e:
-        print("API /api/history error:", e)
-        traceback.print_exc()
-        return jsonify([])
+
     
 @app.route("/api/library/<user_id>")
 def library(user_id):

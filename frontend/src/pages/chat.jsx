@@ -27,7 +27,6 @@ export default function Chat() {
   const [message, setMessage] = useState("");
   const [file, setFile] = useState(null);
   const [fileName, setFileName] = useState("");
-  const [task, setTask] = useState("summarize");
   const [loading, setLoading] = useState(false);
   const [chats, setChats] = useState([]);
   const [activeChat, setActiveChat] = useState(null);
@@ -116,25 +115,39 @@ export default function Chat() {
 
   // --- API: fetch history ---
   const fetchChats = async () => {
-    try {
-      const res = await axios.get(`${API_BASE}/api/history/${user.uid}`);
-      const items = res.data || [];
-      // Normalize: ensure history array and _id present
-      const normalized = items.map((it) => {
-        // prefer conv id fields from backend
-        const id = it.conv_id || it._id || it._id_str || it._id?.toString();
-        return {
-          ...it,
-          _id: id || it._id || undefined,
-          history: it.history || (it.message ? [{ user: it.message, ai: it.reply }] : []),
-        };
-      });
-      setChats(normalized);
-      if (normalized.length > 0) setActiveChat(normalized[0]);
-    } catch (e) {
-      console.error("Fetch error", e);
+  try {
+    const res = await axios.get(`${API_BASE}/api/conversations/${user.uid}`);
+    const convs = res.data || [];
+
+    setChats(convs);
+
+    if (convs.length > 0) {
+      loadConversation(convs[0]._id);
     }
-  };
+  } catch (e) {
+    console.error("Conversation fetch error:", e);
+  }
+};
+  const loadConversation = async (convId) => {
+  try {
+    const res = await axios.get(`${API_BASE}/api/conversation/${convId}`);
+    const msgs = res.data || [];
+
+    const history = msgs.map(m => ({
+      user: m.role === "user" ? m.content : null,
+      ai: m.role === "assistant" ? m.content : null
+    }));
+
+    setActiveChat({
+      _id: convId,
+      history
+    });
+  } catch (e) {
+    console.error("Load conversation error:", e);
+  }
+};
+
+
 
   // --- Utility: save chat entry locally and keep top-most ordering ---
   const upsertChatEntry = (entry) => {
@@ -169,171 +182,81 @@ export default function Chat() {
 
   // --- SEND MESSAGE with streaming fallback ---
   const sendMessage = async () => {
-    // remove interim overlay marker
-    const cleanMessage = message.replace(/¶INTERIM:.*$/, "").trim();
-    if (!cleanMessage) return alert("Please type a question or prompt.");
-    setLoading(true);
-    // create a provisional local entry so UI feels responsive
-    const localId = `local-${Date.now()}`;
-    const existingConvId = activeChat && activeChat._id ? activeChat._id : null;
+  const cleanMessage = message.trim();
+  if (!cleanMessage) return;
 
-    // optimistic entry
-    const optimisticEntry = {
-      _id: existingConvId || localId,
-      message: cleanMessage,
-      reply: activeChat?.reply || "",
-      pdf_url: activeChat?.pdf_url || null,
-      timestamp: Date.now() / 1000,
-     history: [
-  ...(activeChat?.history || []),
-  { user: cleanMessage, ai: "" }  // added only once
-]
-,
-    };
+  setMessage("");
+  setLoading(true);
 
-    upsertChatEntry(optimisticEntry);
-    setActiveChat(optimisticEntry);
-    setMessage("");
+  let convId = activeChat?._id || null;
 
-    // Try streaming endpoint first (backend: /api/stream_chat)
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-    const payload = {
-      user_id: user.uid,
-      conv_id: existingConvId || null,
-      message: cleanMessage,
-    };
+  const payload = {
+    user_id: user.uid,
+    conv_id: convId,
+    message: cleanMessage
+  };
 
-    try {
-      // Attempt streaming fetch
-      const streamRes = await fetch(`${API_BASE}/api/stream_chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
+  const controller = new AbortController();
+  abortControllerRef.current = controller;
 
-      if (!streamRes.ok) {
-        // fallback to non-streaming POST /api/chat
-        throw new Error(`Stream unavailable: ${streamRes.status}`);
-      }
+  const streamRes = await fetch(`${API_BASE}/api/stream_chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal: controller.signal
+  });
 
-      const reader = streamRes.body.getReader();
-      const decoder = new TextDecoder();
-      let done = false;
-      let accumulated = "";
+  const reader = streamRes.body.getReader();
+  const decoder = new TextDecoder();
+  let finalText = "";
+  let updatedConvId = convId;
 
-      // ensure UI shows we are generating
-      setLoading(true);
+  // Add user message locally
+  if (!activeChat) {
+    setActiveChat({ _id: null, history: [] });
+  }
 
-      while (!done) {
-        const { value, done: doneReading } = await reader.read();
-        done = doneReading;
-        if (value) {
-          const chunk = decoder.decode(value, { stream: true });
-          // server sends newline delimited JSON per your backend; handle gracefully
-          const lines = chunk.split("\n").filter(Boolean);
-          for (const line of lines) {
-            try {
-              const obj = JSON.parse(line);
-              if (obj.chunk) {
-                accumulated += obj.chunk;
-                // update optimistic entry partial reply
-                setChats((prev) => {
-                  const updated = prev.slice();
-                  const idx = updated.findIndex((c) => c._id === optimisticEntry._id);
-                  if (idx === -1) return prev;
-                  updated[idx] = {
-                    ...updated[idx],
-                    reply: accumulated,
-                    history: [...(updated[idx].history || []).slice(0, -1), { user: cleanMessage, ai: accumulated }],
-                  };
-                  return updated;
-                });
-                // reflect in activeChat
-                setActiveChat((prev) => {
-                  if (!prev) return prev;
-                  return { ...prev, reply: accumulated, history: [...(prev.history || []).slice(0, -1), { user: cleanMessage, ai: accumulated }] };
-                });
-              } else if (obj.done) {
-                // finalization: backend may return conv_id
-                const convId = obj.conv_id || existingConvId || optimisticEntry._id;
-                // save final message to DB via fetch? The backend already saved on its side.
-                // Update ID if needed
-                setChats((prev) => {
-                  const updated = prev.slice();
-                  const idx = updated.findIndex((c) => c._id === optimisticEntry._id);
-                  if (idx !== -1) {
-                    updated[idx] = { ...updated[idx], _id: convId, reply: accumulated };
-                    const moved = updated.splice(idx, 1)[0];
-                    return [moved, ...updated];
-                  }
-                  return prev;
-                });
-                setActiveChat((prev) => prev ? { ...prev, _id: convId, reply: accumulated } : prev);
-              }
-            } catch (e) {
-              // Not JSON -- try to treat as plain text chunk
-              accumulated += chunk;
-              setChats((prev) => {
-                const updated = prev.slice();
-                const idx = updated.findIndex((c) => c._id === optimisticEntry._id);
-                if (idx !== -1) {
-                  updated[idx] = { ...updated[idx], reply: accumulated, history: [...(updated[idx].history || []).slice(0, -1), { user: cleanMessage, ai: accumulated }] };
-                }
-                return updated;
-              });
-              setActiveChat((prev) => prev ? { ...prev, reply: accumulated } : prev);
-            }
-          }
-        }
-      }
+  setActiveChat(prev => ({
+    ...prev,
+    history: [...(prev?.history || []), { user: cleanMessage, ai: "" }]
+  }));
 
-      setLoading(false);
-      abortControllerRef.current = null;
-    } catch (err) {
-      // If streaming failed or aborted, fallback to simple POST /api/chat (non-stream)
-      if (err.name === "AbortError") {
-        console.log("Stream aborted by user.");
-        setLoading(false);
-        abortControllerRef.current = null;
-        return;
-      }
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
 
-      try {
-        const res = await axios.post(`${API_BASE}/api/chat`, {
-          user_id: user.uid,
-          message: task === "contract" ? `Draft a contract:\n\n${cleanMessage}` : cleanMessage,
-          conv_id: existingConvId || null,
+    const chunk = decoder.decode(value, { stream: true });
+    const lines = chunk.split("\n").filter(Boolean);
+
+    for (const line of lines) {
+      const data = JSON.parse(line);
+
+      if (data.chunk) {
+        finalText += data.chunk;
+
+        setActiveChat(prev => {
+          const h = [...prev.history];
+          const last = h[h.length - 1];
+          last.ai = finalText;
+          return { ...prev, history: h };
         });
+      }
 
-        const aiReply = res.data.reply;
-        const convId = res.data.conv_id || res.data._id || existingConvId || optimisticEntry._id;
-        const pdf_url = res.data.pdf_url || res.data.pdf || null;
-
-        const finalEntry = {
-          _id: convId,
-          message: cleanMessage,
-          reply: aiReply,
-          pdf_url,
-          timestamp: Date.now() / 1000,
-          history: [
-  ...(activeChat?.history || []).slice(0, -1),
-  { user: cleanMessage, ai: aiReply }
-],
-        };
-
-        upsertChatEntry(finalEntry);
-        setActiveChat(finalEntry);
-      } catch (e) {
-        console.error("Send error (both stream & fallback):", e);
-        alert("Failed to send message — try again.");
-      } finally {
-        setLoading(false);
-        abortControllerRef.current = null;
+      if (data.done) {
+        updatedConvId = data.conv_id;
       }
     }
-  };
+  }
+
+  // Save conversation ID after first message
+  if (!convId && updatedConvId) {
+    setActiveChat(prev => ({ ...prev, _id: updatedConvId }));
+    fetchChats();
+  }
+
+  setLoading(false);
+};
+
 
   // --- REGENERATE last user prompt (resend last user message) ---
   const regenerateLast = async (chat) => {
@@ -515,7 +438,7 @@ export default function Chat() {
           {filtered.map((c, i) => (
             <div
               key={c._id || i}
-              onClick={() => setActiveChat(c)}
+              onClick={() => loadConversation(c._id)}
               className={`p-3 rounded-lg cursor-pointer transition-colors text-sm ${activeChat === c ? "bg-[#1b1c20]" : "bg-[#121214] hover:bg-[#18181b]"}`}
             >
               <div className="truncate font-medium">{c.message || "Untitled"}</div>
