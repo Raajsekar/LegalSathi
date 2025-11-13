@@ -552,11 +552,7 @@ export default function Chat() {
           <div className="flex items-center gap-4">
             <h2 className="text-lg font-semibold">Chat</h2>
 
-            <select value={task} onChange={(e) => setTask(e.target.value)} className="bg-[#121214] border border-gray-700 text-sm text-gray-200 px-2 py-1 rounded" title="Choose task">
-              <option value="summarize">Summarize Document</option>
-              <option value="contract">Draft Contract / Agreement</option>
-              <option value="explain">Explain Clause / Law</option>
-            </select>
+           
           </div>
 
           <div className="flex items-center gap-3">
