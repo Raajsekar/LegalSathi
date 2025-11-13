@@ -1,4 +1,4 @@
-// frontend/src/pages/chat.jsx
+// Chat.jsx
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useAuthState } from "react-firebase-hooks/auth";
@@ -14,6 +14,8 @@ import {
   X,
   Mic,
   MicOff,
+  RotateCw,
+  Square,
 } from "lucide-react";
 import copy from "copy-to-clipboard";
 import "./chat.css";
@@ -27,13 +29,17 @@ export default function Chat() {
   const [fileName, setFileName] = useState("");
   const [task, setTask] = useState("summarize");
   const [loading, setLoading] = useState(false);
-  const [activeChat, setActiveChat] = useState(null); // single thread for Option A
+  const [chats, setChats] = useState([]);
+  const [activeChat, setActiveChat] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [showGstPanel, setShowGstPanel] = useState(false);
 
   // voice states
   const [listening, setListening] = useState(false);
   const [supportsSpeech, setSupportsSpeech] = useState(false);
+
+  // streaming/abort
+  const abortControllerRef = useRef(null);
 
   // GST calculator states
   const [gstAmount, setGstAmount] = useState("");
@@ -45,18 +51,17 @@ export default function Chat() {
 
   const scrollRef = useRef(null);
   const recognitionRef = useRef(null);
-  const interimRef = useRef("");
-  const abortRef = useRef(null); // for canceling axios requests
+  const interimRef = useRef(""); // store interim between events
 
-  // Load user's latest conversation (single-thread) and set up speech rec
+  // --- init: fetch chats and speech detection ---
   useEffect(() => {
-    if (user) loadConversation();
+    if (user) fetchChats();
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRecognition) {
       setSupportsSpeech(true);
       const r = new SpeechRecognition();
-      r.continuous = false;
+      r.continuous = false; // single shot per hold
       r.interimResults = true;
       r.lang = "en-IN";
       recognitionRef.current = r;
@@ -69,18 +74,27 @@ export default function Chat() {
           if (res.isFinal) final += res[0].transcript;
           else interim += res[0].transcript;
         }
+
         interimRef.current = interim || "";
-        setMessage((prev) => {
-          const base = prev.replace(/¶INTERIM:.*$/, "");
-          if (final) return (base ? base + " " : "") + final;
+        setMessage((prevBase) => {
+          // remove any existing interim overlay
+          const base = prevBase.replace(/¶INTERIM:.*$/, "");
+          if (final) {
+            // final results get appended permanently
+            return (base ? base + " " : "") + final;
+          }
+          // show interim as marker appended (not committed)
           return base + (interim ? ` ¶INTERIM:${interim}` : "");
         });
       };
 
       r.onend = () => {
-        setListening(false);
-        setMessage((m) => m.replace(/¶INTERIM:.*$/, "").trim());
-        interimRef.current = "";
+        // finalize text: remove interim marker and ensure state updates render
+        setTimeout(() => {
+          setListening(false);
+          setMessage((m) => m.replace(/¶INTERIM:.*$/, "").trim());
+          interimRef.current = "";
+        }, 120);
       };
 
       r.onerror = (e) => {
@@ -89,197 +103,243 @@ export default function Chat() {
         interimRef.current = "";
       };
     }
-    // eslint-disable-next-line
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
-  // autoscroll after new message/reply
   useEffect(() => {
     if (scrollRef.current) {
       setTimeout(() => {
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
       }, 80);
     }
-  }, [activeChat]);
+  }, [activeChat, chats]);
 
-  async function loadConversation() {
+  // --- API: fetch history ---
+  const fetchChats = async () => {
     try {
       const res = await axios.get(`${API_BASE}/api/history/${user.uid}`);
-      // backend returns array of chat records. For Option A we want a single continuous thread:
-      // choose the most recent chat (or merge if you prefer). We'll load the most recent record if exists,
-      // otherwise create empty activeChat
       const items = res.data || [];
-      if (items.length > 0) {
-        // pick the most recent saved chat (assuming saved with timestamp)
-        const sorted = items.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-        const top = sorted[0];
-        // normalize history (some records may not have history)
-        top.history = top.history || (top.message ? [{ user: top.message, ai: top.reply }] : []);
-        setActiveChat(top);
-      } else {
-        setActiveChat({
-          _id: `local-${Date.now()}`,
-          message: "New conversation",
-          reply: "Start by asking a question or uploading a file.",
-          history: [],
-          timestamp: Date.now() / 1000,
-          pdf_url: null,
-        });
-      }
-    } catch (e) {
-      console.error("Load conv error", e);
-      // initialize empty thread
-      setActiveChat({
-        _id: `local-${Date.now()}`,
-        message: "New conversation",
-        reply: "Start by asking a question or uploading a file.",
-        history: [],
-        timestamp: Date.now() / 1000,
-        pdf_url: null,
+      // Normalize: ensure history array and _id present
+      const normalized = items.map((it) => {
+        // prefer conv id fields from backend
+        const id = it.conv_id || it._id || it._id_str || it._id?.toString();
+        return {
+          ...it,
+          _id: id || it._id || undefined,
+          history: it.history || (it.message ? [{ user: it.message, ai: it.reply }] : []),
+        };
       });
-    }
-  }
-
-  // --- helper to persist conversation on backend (so history remains across login/logout) ---
-  const persistChat = async (chat) => {
-    try {
-      // If backend expects chats.insert_one elsewhere, this endpoint may be custom.
-      // We'll call /api/chat to persist when sending; for uploads it's also stored.
-      // Here we keep a light-weight save endpoint if exists, otherwise ignore.
-      // Attempt optional upsert save: /api/chat/save (non-breaking if not present)
-      await axios.post(`${API_BASE}/api/chat/save`, {
-        user_id: user?.uid,
-        chat,
-      }).catch(() => {
-        // ignore if endpoint doesn't exist
-      });
+      setChats(normalized);
+      if (normalized.length > 0) setActiveChat(normalized[0]);
     } catch (e) {
-      // ignore silently
+      console.error("Fetch error", e);
     }
   };
 
-  // --- Cancel / Stop generator ---
-  const stopGeneration = () => {
-    if (abortRef.current) {
-      abortRef.current.abort();
-      abortRef.current = null;
+  // --- Utility: save chat entry locally and keep top-most ordering ---
+  const upsertChatEntry = (entry) => {
+    setChats((prev) => {
+      // if incoming entry has _id, merge into existing
+      if (entry._id) {
+        const idx = prev.findIndex((c) => c._id === entry._id);
+        if (idx !== -1) {
+          const updated = prev.slice();
+          updated[idx] = { ...updated[idx], ...entry };
+          const moved = updated.splice(idx, 1)[0];
+          return [moved, ...updated];
+        }
+      }
+      // fallback: if activeChat exists and has _id, append into it
+      return [entry, ...prev];
+    });
+  };
+
+  // --- STOP GENERATING (abort current request) ---
+  const stopGenerating = () => {
+    try {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    } catch (e) {
+      console.warn("Abort error", e);
+    } finally {
       setLoading(false);
     }
   };
 
-  // --- Send text message (or re-generate) ---
-  const sendMessage = async ({ messageOverride = null, isRegenerate = false } = {}) => {
-    // strip interim overlay and trim
-    const rawMessage = (messageOverride ?? message).replace(/¶INTERIM:.*$/, "").trim();
-    if (!rawMessage) {
-      // for regenerate we silently return instead of alert
-      if (isRegenerate) return;
-      return alert("Please type a question or prompt.");
-    }
-
-    // add user's message to activeChat.history (but avoid duplicate if same as last)
-    const userTurn = { user: rawMessage, ai: null, generating: true };
-    setActiveChat((prev) => {
-      const copy = { ...(prev || {}) };
-      copy.history = copy.history || [];
-      // do not duplicate if last user entry identical
-      const last = copy.history[copy.history.length - 1];
-      if (!last || last.user !== rawMessage) copy.history.push(userTurn);
-      else {
-        // if regenerating, set last.ai = null and set generating flag
-        last.ai = null;
-        last.generating = true;
-      }
-      return copy;
-    });
-
-    setMessage("");
+  // --- SEND MESSAGE with streaming fallback ---
+  const sendMessage = async () => {
+    // remove interim overlay marker
+    const cleanMessage = message.replace(/¶INTERIM:.*$/, "").trim();
+    if (!cleanMessage) return alert("Please type a question or prompt.");
     setLoading(true);
+    // create a provisional local entry so UI feels responsive
+    const localId = `local-${Date.now()}`;
+    const existingConvId = activeChat && activeChat._id ? activeChat._id : null;
 
-    // create AbortController for the axios call
+    // optimistic entry
+    const optimisticEntry = {
+      _id: existingConvId || localId,
+      message: cleanMessage,
+      reply: activeChat?.reply || "",
+      pdf_url: activeChat?.pdf_url || null,
+      timestamp: Date.now() / 1000,
+      history: [...(activeChat?.history || []), { user: cleanMessage, ai: "" }],
+    };
+
+    upsertChatEntry(optimisticEntry);
+    setActiveChat(optimisticEntry);
+    setMessage("");
+
+    // Try streaming endpoint first (backend: /api/stream_chat)
     const controller = new AbortController();
-    abortRef.current = controller;
+    abortControllerRef.current = controller;
+    const payload = {
+      user_id: user.uid,
+      conv_id: existingConvId || null,
+      message: cleanMessage,
+    };
 
     try {
-      const payload = {
-        user_id: user.uid,
-        message: task === "contract" ? `Draft a contract:\n\n${rawMessage}` : rawMessage,
-      };
-
-      const res = await axios.post(`${API_BASE}/api/chat`, payload, {
+      // Attempt streaming fetch
+      const streamRes = await fetch(`${API_BASE}/api/stream_chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
         signal: controller.signal,
-        timeout: 0, // no extra axios timeout
       });
 
-      const aiReply = res.data.reply;
-      const pdf_url = res.data.pdf_url || res.data.pdf || null;
+      if (!streamRes.ok) {
+        // fallback to non-streaming POST /api/chat
+        throw new Error(`Stream unavailable: ${streamRes.status}`);
+      }
 
-      // update history: find last user entry without ai and set ai
-      setActiveChat((prev) => {
-        const copy = { ...(prev || {}) };
-        copy.history = copy.history || [];
-        // find last entry where ai is null (the one we just added)
-        for (let i = copy.history.length - 1; i >= 0; i--) {
-          if (!copy.history[i].ai) {
-            copy.history[i] = { user: copy.history[i].user, ai: aiReply };
-            break;
+      const reader = streamRes.body.getReader();
+      const decoder = new TextDecoder();
+      let done = false;
+      let accumulated = "";
+
+      // ensure UI shows we are generating
+      setLoading(true);
+
+      while (!done) {
+        const { value, done: doneReading } = await reader.read();
+        done = doneReading;
+        if (value) {
+          const chunk = decoder.decode(value, { stream: true });
+          // server sends newline delimited JSON per your backend; handle gracefully
+          const lines = chunk.split("\n").filter(Boolean);
+          for (const line of lines) {
+            try {
+              const obj = JSON.parse(line);
+              if (obj.chunk) {
+                accumulated += obj.chunk;
+                // update optimistic entry partial reply
+                setChats((prev) => {
+                  const updated = prev.slice();
+                  const idx = updated.findIndex((c) => c._id === optimisticEntry._id);
+                  if (idx === -1) return prev;
+                  updated[idx] = {
+                    ...updated[idx],
+                    reply: accumulated,
+                    history: [...(updated[idx].history || []).slice(0, -1), { user: cleanMessage, ai: accumulated }],
+                  };
+                  return updated;
+                });
+                // reflect in activeChat
+                setActiveChat((prev) => {
+                  if (!prev) return prev;
+                  return { ...prev, reply: accumulated, history: [...(prev.history || []).slice(0, -1), { user: cleanMessage, ai: accumulated }] };
+                });
+              } else if (obj.done) {
+                // finalization: backend may return conv_id
+                const convId = obj.conv_id || existingConvId || optimisticEntry._id;
+                // save final message to DB via fetch? The backend already saved on its side.
+                // Update ID if needed
+                setChats((prev) => {
+                  const updated = prev.slice();
+                  const idx = updated.findIndex((c) => c._id === optimisticEntry._id);
+                  if (idx !== -1) {
+                    updated[idx] = { ...updated[idx], _id: convId, reply: accumulated };
+                    const moved = updated.splice(idx, 1)[0];
+                    return [moved, ...updated];
+                  }
+                  return prev;
+                });
+                setActiveChat((prev) => prev ? { ...prev, _id: convId, reply: accumulated } : prev);
+              }
+            } catch (e) {
+              // Not JSON -- try to treat as plain text chunk
+              accumulated += chunk;
+              setChats((prev) => {
+                const updated = prev.slice();
+                const idx = updated.findIndex((c) => c._id === optimisticEntry._id);
+                if (idx !== -1) {
+                  updated[idx] = { ...updated[idx], reply: accumulated, history: [...(updated[idx].history || []).slice(0, -1), { user: cleanMessage, ai: accumulated }] };
+                }
+                return updated;
+              });
+              setActiveChat((prev) => prev ? { ...prev, reply: accumulated } : prev);
+            }
           }
         }
-        copy.reply = aiReply;
-        copy.pdf_url = pdf_url;
-        copy.timestamp = Date.now() / 1000;
-        return copy;
-      });
-
-      // try to persist if desired (non-breaking)
-      await persistChat({
-        ...activeChat,
-        reply: res.data.reply,
-        pdf_url,
-        history: (activeChat?.history || []).map((h) => ({ user: h.user, ai: h.ai })),
-      });
-    } catch (err) {
-      if (axios.isCancel?.(err) || err.name === "CanceledError") {
-        console.log("Generation canceled.");
-        // mark last user turn as ai = "[cancelled]" or leave it blank
-        setActiveChat((prev) => {
-          const copy = { ...(prev || {}) };
-          copy.history = copy.history || [];
-          const last = copy.history[copy.history.length - 1];
-          if (last && !last.ai) last.ai = "[Generation stopped]";
-          return copy;
-        });
-      } else {
-        console.error("Send error", err);
-        // show an inline error in the AI reply
-        setActiveChat((prev) => {
-          const copy = { ...(prev || {}) };
-          copy.history = copy.history || [];
-          const last = copy.history[copy.history.length - 1];
-          if (last && !last.ai) last.ai = "[Failed to generate response — try again]";
-          return copy;
-        });
       }
-    } finally {
-      abortRef.current = null;
+
       setLoading(false);
+      abortControllerRef.current = null;
+    } catch (err) {
+      // If streaming failed or aborted, fallback to simple POST /api/chat (non-stream)
+      if (err.name === "AbortError") {
+        console.log("Stream aborted by user.");
+        setLoading(false);
+        abortControllerRef.current = null;
+        return;
+      }
+
+      try {
+        const res = await axios.post(`${API_BASE}/api/chat`, {
+          user_id: user.uid,
+          message: task === "contract" ? `Draft a contract:\n\n${cleanMessage}` : cleanMessage,
+          conv_id: existingConvId || null,
+        });
+
+        const aiReply = res.data.reply;
+        const convId = res.data.conv_id || res.data._id || existingConvId || optimisticEntry._id;
+        const pdf_url = res.data.pdf_url || res.data.pdf || null;
+
+        const finalEntry = {
+          _id: convId,
+          message: cleanMessage,
+          reply: aiReply,
+          pdf_url,
+          timestamp: Date.now() / 1000,
+          history: [...(optimisticEntry.history || []), { user: cleanMessage, ai: aiReply }],
+        };
+
+        upsertChatEntry(finalEntry);
+        setActiveChat(finalEntry);
+      } catch (e) {
+        console.error("Send error (both stream & fallback):", e);
+        alert("Failed to send message — try again.");
+      } finally {
+        setLoading(false);
+        abortControllerRef.current = null;
+      }
     }
   };
 
-  // --- Regenerate: re-run the last user message (no popup, no duplicates) ---
-  const handleRegenerate = async () => {
-    if (!activeChat || !activeChat.history || activeChat.history.length === 0) return;
-    // find the last user turn (the last history entry)
-    const last = activeChat.history[activeChat.history.length - 1];
-    if (!last || !last.user) return;
-
-    // stop any ongoing generation first
-    stopGeneration();
-
-    // call sendMessage with last.user and isRegenerate flag to avoid alerts
-    await sendMessage({ messageOverride: last.user, isRegenerate: true });
+  // --- REGENERATE last user prompt (resend last user message) ---
+  const regenerateLast = async (chat) => {
+    if (!chat) return;
+    const lastTurn = (chat.history || []).slice(-1)[0];
+    const lastUser = lastTurn?.user || chat.message;
+    if (!lastUser) return alert("No user message to regenerate.");
+    setMessage(lastUser);
+    // small delay to allow UI update then send
+    setTimeout(() => sendMessage(), 120);
   };
 
-  // --- File upload handler (preserve your existing API structure) ---
+  // --- FILE UPLOAD (summarize / explain) ---
   const handleUpload = async () => {
     if (!file) return alert("Please select a file first.");
     setLoading(true);
@@ -294,20 +354,20 @@ export default function Chat() {
       });
 
       const aiReply = res.data.reply;
+      const convId = res.data.conv_id || res.data._id || undefined;
       const pdf_url = res.data.pdf_url || res.data.pdf || null;
 
-      setActiveChat((prev) => {
-        const copy = { ...(prev || {}) };
-        copy.history = copy.history || [];
-        copy.history.push({ user: `📄 ${file.name}`, ai: aiReply });
-        copy.reply = aiReply;
-        copy.pdf_url = pdf_url;
-        copy.timestamp = Date.now() / 1000;
-        return copy;
-      });
+      const newEntry = {
+        _id: convId || `local-${Date.now()}`,
+        message: `📄 ${file.name}`,
+        reply: aiReply,
+        pdf_url,
+        timestamp: Date.now() / 1000,
+        history: [{ user: `📄 ${file.name}`, ai: aiReply }],
+      };
 
-      // persist optional
-      await persistChat(activeChat);
+      upsertChatEntry(newEntry);
+      setActiveChat(newEntry);
       setFile(null);
       setFileName("");
     } catch (e) {
@@ -318,34 +378,14 @@ export default function Chat() {
     }
   };
 
-  // hold-to-record helpers
-  const startHoldRecording = () => {
-    if (!recognitionRef.current) return alert("Speech recognition not supported in this browser.");
-    try {
-      setMessage((m) => m.replace(/¶INTERIM:.*$/, ""));
-      interimRef.current = "";
-      recognitionRef.current.start();
-      setListening(true);
-    } catch (e) {
-      console.warn("Start recording error", e);
-    }
-  };
-  const stopHoldRecording = () => {
-    if (!recognitionRef.current) return;
-    try {
-      recognitionRef.current.stop();
-      setListening(false);
-    } catch (e) {
-      console.warn("Stop recording error", e);
-    }
-  };
-
+  // --- file input change (show filename) ---
   const onFileChange = (e) => {
     const f = e.target.files?.[0] ?? null;
     setFile(f);
     setFileName(f ? f.name : "");
   };
 
+  // copy reply
   const handleCopy = (text) => {
     copy(text || "");
     const el = document.createElement("div");
@@ -355,6 +395,7 @@ export default function Chat() {
     setTimeout(() => el.remove(), 1300);
   };
 
+  // Reset conversation: create placeholder new chat but do NOT delete backend history
   const handleResetConversation = () => {
     const placeholder = {
       _id: `placeholder-${Date.now()}`,
@@ -362,12 +403,13 @@ export default function Chat() {
       reply: "Start by asking a question or uploading a file.",
       timestamp: Date.now() / 1000,
       pdf_url: null,
-      history: [],
+      history: [{ user: "New conversation", ai: "Start by asking a question or uploading a file." }],
     };
+    setChats((prev) => [placeholder, ...prev]);
     setActiveChat(placeholder);
   };
 
-  // GST helpers
+  // --- GST tools ---
   const calculateGst = async () => {
     if (!gstAmount) return alert("Enter an amount first.");
     try {
@@ -383,6 +425,7 @@ export default function Chat() {
       alert("Calculation failed.");
     }
   };
+
   const loadGstTips = async () => {
     try {
       const res = await axios.get(`${API_BASE}/api/gst/tips`);
@@ -391,20 +434,53 @@ export default function Chat() {
       console.error("GST tips fetch error", e);
     }
   };
+
   useEffect(() => {
     if (showGstPanel) loadGstTips();
-    // eslint-disable-next-line
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showGstPanel]);
+
+  // --- speech handling helpers (Hold-to-record) ---
+  const startHoldRecording = () => {
+    if (!recognitionRef.current) return alert("Speech recognition not supported in this browser.");
+    try {
+      setMessage((m) => m.replace(/¶INTERIM:.*$/, ""));
+      interimRef.current = "";
+      recognitionRef.current.start();
+      setListening(true);
+    } catch (e) {
+      console.warn("Start recording error", e);
+    }
+  };
+
+  const stopHoldRecording = () => {
+    if (!recognitionRef.current) return;
+    try {
+      recognitionRef.current.stop();
+      // keep listening state for a short moment so animation shows
+      setTimeout(() => setListening(false), 140);
+    } catch (e) {
+      console.warn("Stop recording error", e);
+    }
+  };
+
+  // Filtered chats for Sidebar search
+  const filtered = chats.filter(
+    (c) =>
+      (c.message && c.message.toLowerCase().includes(searchQuery.toLowerCase())) ||
+      (c.reply && c.reply.toLowerCase().includes(searchQuery.toLowerCase()))
+  );
 
   return (
     <div className="flex h-screen bg-[#0b0b0d] text-gray-100">
-      {/* Sidebar minimal (keeps design but Option A single thread) */}
+      {/* Sidebar */}
       <aside className="w-80 bg-[#0f1012] border-r border-gray-800 flex flex-col">
         <div className="p-4 border-b border-gray-800 flex items-center justify-between gap-2">
           <div>
             <h1 className="text-xl font-bold">⚖️ LegalSathi</h1>
             <div className="text-xs text-gray-400 mt-1">AI legal assistant</div>
           </div>
+
           <div className="flex gap-2">
             <button title="New" onClick={handleResetConversation} className="p-2 rounded hover:bg-gray-800">
               <Plus size={18} />
@@ -425,7 +501,20 @@ export default function Chat() {
         </div>
 
         <div className="flex-1 overflow-y-auto p-2 space-y-2">
-          <div className="text-gray-500 px-3 text-sm">This app uses a single continuous thread per user. History loads on login.</div>
+          {filtered.length === 0 && (
+            <div className="text-gray-500 px-3 text-sm">No chats yet — start a conversation.</div>
+          )}
+
+          {filtered.map((c, i) => (
+            <div
+              key={c._id || i}
+              onClick={() => setActiveChat(c)}
+              className={`p-3 rounded-lg cursor-pointer transition-colors text-sm ${activeChat === c ? "bg-[#1b1c20]" : "bg-[#121214] hover:bg-[#18181b]"}`}
+            >
+              <div className="truncate font-medium">{c.message || "Untitled"}</div>
+              <div className="text-xs text-gray-500 mt-1 line-clamp-2">{(c.reply || "").substring(0, 140)}</div>
+            </div>
+          ))}
         </div>
 
         <div className="p-3 border-t border-gray-800 flex items-center gap-2">
@@ -444,12 +533,7 @@ export default function Chat() {
           <div className="flex items-center gap-4">
             <h2 className="text-lg font-semibold">Chat</h2>
 
-            <select
-              value={task}
-              onChange={(e) => setTask(e.target.value)}
-              className="bg-[#121214] border border-gray-700 text-sm text-gray-200 px-2 py-1 rounded"
-              title="Choose task"
-            >
+            <select value={task} onChange={(e) => setTask(e.target.value)} className="bg-[#121214] border border-gray-700 text-sm text-gray-200 px-2 py-1 rounded" title="Choose task">
               <option value="summarize">Summarize Document</option>
               <option value="contract">Draft Contract / Agreement</option>
               <option value="explain">Explain Clause / Law</option>
@@ -460,26 +544,22 @@ export default function Chat() {
             <button onClick={() => setShowGstPanel(!showGstPanel)} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2">
               <Calculator size={14} /> GST / Tax Tools
             </button>
-            <button onClick={() => loadConversation()} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700">Refresh</button>
+            <button onClick={() => fetchChats()} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700">Refresh</button>
           </div>
         </header>
 
         <section className="flex-1 overflow-y-auto p-6 chat-content" ref={scrollRef}>
           {!activeChat ? (
-            <div className="text-gray-500 text-center mt-28">Loading...</div>
+            <div className="text-gray-500 text-center mt-28">Pick a chat or start a new one.</div>
           ) : (
             <article className="max-w-3xl mx-auto space-y-4">
-              {/* Render entire conversation history */}
-              {(activeChat.history || []).map((turn, i) => (
-                <div key={i} className="space-y-2">
+              {(activeChat.history || [{ user: activeChat.message, ai: activeChat.reply }]).map((turn, i) => (
+                <div key={i} className="space-y-1">
                   <div className="text-right text-blue-400 text-sm">{turn.user}</div>
-                  <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap reply-box">
-                    {turn.ai ?? (turn.generating ? "Generating..." : "No reply yet.")}
-                  </div>
+                  <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap reply-box">{turn.ai || "No reply yet."}</div>
                 </div>
               ))}
 
-              {/* PDF download + Copy + Regenerate + Stop */}
               <div className="flex items-center gap-3 mt-3">
                 {activeChat.pdf_url && (
                   <a href={activeChat.pdf_url.startsWith("http") ? activeChat.pdf_url : `${API_BASE}${activeChat.pdf_url}`} target="_blank" rel="noreferrer" className="text-blue-400 hover:underline flex items-center gap-2">
@@ -491,23 +571,15 @@ export default function Chat() {
                   <Copy size={14} /> Copy
                 </button>
 
-                <button
-                  onClick={handleRegenerate}
-                  disabled={loading}
-                  className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2"
-                  title="Regenerate last response"
-                >
-                  🔄 Regenerate
+                <button onClick={() => regenerateLast(activeChat)} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2">
+                  <RotateCw size={14} /> Regenerate
                 </button>
 
-                <button
-                  onClick={stopGeneration}
-                  disabled={!loading}
-                  className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2"
-                  title="Stop generating"
-                >
-                  ⏹ Stop
-                </button>
+                {loading && (
+                  <button onClick={stopGenerating} className="text-sm px-3 py-1 rounded bg-[#7f1d1d] hover:bg-[#9b1f1f] border border-gray-700 flex items-center gap-2">
+                    <Square size={14} /> Stop
+                  </button>
+                )}
               </div>
             </article>
           )}
