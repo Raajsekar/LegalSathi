@@ -126,7 +126,7 @@ export default function Chat() {
         return {
           ...it,
           _id: id || it._id || undefined,
-          history: it.history || (it.message ? [{ user: it.message, ai: it.reply }] : []),
+          history: Array.isArray(it.history) ? it.history : [],
         };
       });
       setChats(normalized);
