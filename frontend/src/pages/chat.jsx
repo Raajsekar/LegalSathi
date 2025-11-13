@@ -329,15 +329,53 @@ export default function Chat() {
   };
 
   // --- REGENERATE last user prompt (resend last user message) ---
-  const regenerateLast = async (chat) => {
-    if (!chat) return;
-    const lastTurn = (chat.history || []).slice(-1)[0];
-    const lastUser = lastTurn?.user || chat.message;
-    if (!lastUser) return alert("No user message to regenerate.");
-    setMessage(lastUser);
-    // small delay to allow UI update then send
-    setTimeout(() => sendMessage(), 120);
-  };
+const regenerateResponse = async () => {
+  if (!activeChat || !activeChat.history || activeChat.history.length === 0) return;
+
+  const lastTurn = activeChat.history[activeChat.history.length - 1];
+  const lastUserMessage = lastTurn.user;
+  if (!lastUserMessage) return;
+
+  setLoading(true);
+
+  try {
+    const payload = {
+      user_id: user.uid,
+      message: lastUserMessage
+    };
+
+    const res = await axios.post(`${API_BASE}/api/chat`, payload);
+
+    const aiReply = res.data.reply;
+    const pdf_url = res.data.pdf_url || null;
+
+    // update history (replace last ai ONLY)
+    const updatedHistory = [...activeChat.history];
+    updatedHistory[updatedHistory.length - 1] = {
+      ...updatedHistory[updatedHistory.length - 1],
+      ai: aiReply
+    };
+
+    const updatedChat = {
+      ...activeChat,
+      reply: aiReply,
+      pdf_url,
+      history: updatedHistory
+    };
+
+    setActiveChat(updatedChat);
+
+    // update global chat list (if you keep one)
+    setChats(prev =>
+      prev.map(c => (c._id === activeChat._id ? updatedChat : c))
+    );
+
+  } catch (err) {
+    console.error("Regenerate failed", err);
+  }
+
+  setLoading(false);
+};
 
   // --- FILE UPLOAD (summarize / explain) ---
   const handleUpload = async () => {
@@ -442,27 +480,39 @@ export default function Chat() {
 
   // --- speech handling helpers (Hold-to-record) ---
   const startHoldRecording = () => {
-    if (!recognitionRef.current) return alert("Speech recognition not supported in this browser.");
-    try {
-      setMessage((m) => m.replace(/¶INTERIM:.*$/, ""));
-      interimRef.current = "";
-      recognitionRef.current.start();
-      setListening(true);
-    } catch (e) {
-      console.warn("Start recording error", e);
-    }
-  };
+  if (!recognitionRef.current) {
+    alert("Speech recognition not supported in this browser.");
+    return;
+  }
+
+  try {
+    // Request mic permission FIRST (fixes animation + recording not starting)
+    navigator.mediaDevices.getUserMedia({ audio: true });
+
+    // Clean previous interim text
+    setMessage((m) => m.replace(/¶INTERIM:.*$/, ""));
+    interimRef.current = "";
+
+    // Start speech recognition
+    recognitionRef.current.start();
+    setListening(true); // triggers animation
+  } catch (err) {
+    console.error("Mic permission error", err);
+  }
+};
+
 
   const stopHoldRecording = () => {
-    if (!recognitionRef.current) return;
-    try {
-      recognitionRef.current.stop();
-      // keep listening state for a short moment so animation shows
-      setTimeout(() => setListening(false), 140);
-    } catch (e) {
-      console.warn("Stop recording error", e);
-    }
-  };
+  if (!recognitionRef.current) return;
+
+  try {
+    recognitionRef.current.stop();
+    setListening(false);
+  } catch (err) {
+    console.error("Stop recording error", err);
+  }
+};
+
 
   // Filtered chats for Sidebar search
   const filtered = chats.filter(
@@ -561,26 +611,33 @@ export default function Chat() {
               ))}
 
               <div className="flex items-center gap-3 mt-3">
-                {activeChat.pdf_url && (
-                  <a href={activeChat.pdf_url.startsWith("http") ? activeChat.pdf_url : `${API_BASE}${activeChat.pdf_url}`} target="_blank" rel="noreferrer" className="text-blue-400 hover:underline flex items-center gap-2">
-                    <FileText size={16} /> Download PDF
-                  </a>
-                )}
+  {activeChat.pdf_url && (
+    <a
+      href={activeChat.pdf_url.startsWith("http") ? activeChat.pdf_url : `${API_BASE}${activeChat.pdf_url}`}
+      target="_blank"
+      className="text-blue-400 flex items-center gap-2"
+    >
+      <FileText size={16} /> Download PDF
+    </a>
+  )}
 
-                <button onClick={() => handleCopy(activeChat.reply)} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2">
-                  <Copy size={14} /> Copy
-                </button>
+  <button
+    onClick={() => handleCopy(activeChat.reply)}
+    className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2"
+  >
+    <Copy size={14} /> Copy
+  </button>
 
-                <button onClick={() => regenerateLast(activeChat)} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2">
-                  <RotateCw size={14} /> Regenerate
-                </button>
+  {/* REGENERATE BUTTON */}
+  <button
+    onClick={regenerateResponse}
+    disabled={loading}
+    className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2"
+  >
+    <RefreshCw size={14} /> {loading ? "Regenerating..." : "Regenerate"}
+  </button>
+</div>
 
-                {loading && (
-                  <button onClick={stopGenerating} className="text-sm px-3 py-1 rounded bg-[#7f1d1d] hover:bg-[#9b1f1f] border border-gray-700 flex items-center gap-2">
-                    <Square size={14} /> Stop
-                  </button>
-                )}
-              </div>
             </article>
           )}
         </section>
