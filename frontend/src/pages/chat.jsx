@@ -571,7 +571,7 @@ export default function Chat() {
               {(activeChat.history || [{ user: activeChat.message, ai: activeChat.reply }]).map((turn, i) => (
                 <div key={i} className="space-y-1">
                   <div className="text-right text-blue-400 text-sm">{turn.user}</div>
-                  <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap reply-box">{turn.ai || "No reply yet."}</div>
+                  <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap reply-box">{turn.ai || ""}</div>
                 </div>
               ))}
 
