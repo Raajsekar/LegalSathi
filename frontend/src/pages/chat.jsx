@@ -120,15 +120,16 @@ export default function Chat() {
       const res = await axios.get(`${API_BASE}/api/history/${user.uid}`);
       const items = res.data || [];
       // Normalize: ensure history array and _id present
-      const normalized = items.map((it) => {
-        // prefer conv id fields from backend
-        const id = it.conv_id || it._id || it._id_str || it._id?.toString();
-        return {
-          ...it,
-          _id: id || it._id || undefined,
-          history: Array.isArray(it.history) ? it.history : [],
-        };
-      });
+      const normalized = items.map(it => {
+  const id = it.conv_id || it._id || it._id_str || it._id?.toString();
+
+  return {
+    ...it,
+    _id: id || it._id,
+    history: Array.isArray(it.history) ? it.history : []
+  };
+});
+
       setChats(normalized);
       if (normalized.length > 0) setActiveChat(normalized[0]);
     } catch (e) {
