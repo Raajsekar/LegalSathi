@@ -120,16 +120,15 @@ export default function Chat() {
       const res = await axios.get(`${API_BASE}/api/history/${user.uid}`);
       const items = res.data || [];
       // Normalize: ensure history array and _id present
-      const normalized = items.map(it => {
-  const id = it.conv_id || it._id || it._id_str || it._id?.toString();
-
-  return {
-    ...it,
-    _id: id || it._id,
-    history: Array.isArray(it.history) ? it.history : []
-  };
-});
-
+      const normalized = items.map((it) => {
+        // prefer conv id fields from backend
+        const id = it.conv_id || it._id || it._id_str || it._id?.toString();
+        return {
+          ...it,
+          _id: id || it._id || undefined,
+          history: it.history || (it.message ? [{ user: it.message, ai: it.reply }] : []),
+        };
+      });
       setChats(normalized);
       if (normalized.length > 0) setActiveChat(normalized[0]);
     } catch (e) {
@@ -185,10 +184,11 @@ export default function Chat() {
       reply: activeChat?.reply || "",
       pdf_url: activeChat?.pdf_url || null,
       timestamp: Date.now() / 1000,
-      history: [
+     history: [
   ...(activeChat?.history || []),
   { user: cleanMessage, ai: "" }  // added only once
-],
+]
+,
     };
 
     upsertChatEntry(optimisticEntry);
@@ -336,53 +336,15 @@ export default function Chat() {
   };
 
   // --- REGENERATE last user prompt (resend last user message) ---
-  const regenerateLast = async () => {
-  if (!activeChat || !activeChat.history || activeChat.history.length === 0) return;
-
-  const lastTurn = activeChat.history[activeChat.history.length - 1];
-  const lastUser = lastTurn.user;
-  if (!lastUser) return;
-
-  setLoading(true);
-
-  try {
-    const payload = {
-      user_id: user.uid,
-      message: lastUser
-    };
-
-    const res = await axios.post(`${API_BASE}/api/chat`, payload);
-    const aiReply = res.data.reply;
-    const pdf_url = res.data.pdf_url || null;
-
-    // update history (replace last AI message only)
-    const updatedHistory = [...activeChat.history];
-    updatedHistory[updatedHistory.length - 1] = {
-      user: lastUser,
-      ai: aiReply
-    };
-
-    const updatedChat = {
-      ...activeChat,
-      reply: aiReply,
-      pdf_url,
-      history: updatedHistory
-    };
-
-    setActiveChat(updatedChat);
-
-    // update chats list
-    setChats(prev =>
-      prev.map(c => (c._id === activeChat._id ? updatedChat : c))
-    );
-
-  } catch (e) {
-    console.error("Regenerate failed", e);
-  }
-
-  setLoading(false);
-};
-
+  const regenerateLast = async (chat) => {
+    if (!chat) return;
+    const lastTurn = (chat.history || []).slice(-1)[0];
+    const lastUser = lastTurn?.user || chat.message;
+    if (!lastUser) return alert("No user message to regenerate.");
+    setMessage(lastUser);
+    // small delay to allow UI update then send
+    setTimeout(() => sendMessage(), 120);
+  };
 
   // --- FILE UPLOAD (summarize / explain) ---
   const handleUpload = async () => {
@@ -487,37 +449,27 @@ export default function Chat() {
 
   // --- speech handling helpers (Hold-to-record) ---
   const startHoldRecording = () => {
-  if (!recognitionRef.current) {
-    alert("Speech recognition not supported in this browser.");
-    return;
-  }
-
-  try {
-    // force permission request (fixes mic animation)
-    navigator.mediaDevices.getUserMedia({ audio: true });
-
-    // clean interim state
-    setMessage(m => m.replace(/¶INTERIM:.*$/, ""));
-    interimRef.current = "";
-
-    recognitionRef.current.start();
-    setListening(true);
-  } catch (err) {
-    console.error("Mic permission error", err);
-  }
-};
-
+    if (!recognitionRef.current) return alert("Speech recognition not supported in this browser.");
+    try {
+      setMessage((m) => m.replace(/¶INTERIM:.*$/, ""));
+      interimRef.current = "";
+      recognitionRef.current.start();
+      setListening(true);
+    } catch (e) {
+      console.warn("Start recording error", e);
+    }
+  };
 
   const stopHoldRecording = () => {
-  if (!recognitionRef.current) return;
-  try {
-    recognitionRef.current.stop();
-  } catch (e) {
-    console.warn("Stop recording error", e);
-  }
-  setTimeout(() => setListening(false), 150);
-};
-
+    if (!recognitionRef.current) return;
+    try {
+      recognitionRef.current.stop();
+      // keep listening state for a short moment so animation shows
+      setTimeout(() => setListening(false), 140);
+    } catch (e) {
+      console.warn("Stop recording error", e);
+    }
+  };
 
   // Filtered chats for Sidebar search
   const filtered = chats.filter(
@@ -608,18 +560,12 @@ export default function Chat() {
             <div className="text-gray-500 text-center mt-28">Pick a chat or start a new one.</div>
           ) : (
             <article className="max-w-3xl mx-auto space-y-4">
-              {activeChat.history?.map((turn, i) => (
-  <div key={i} className="space-y-1">
-    <div className="text-right text-blue-400 text-sm">
-      {turn.user}
-    </div>
-
-    <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap reply-box">
-      {turn.ai || "No reply yet."}
-    </div>
-  </div>
-))}
-
+              {(activeChat.history || [{ user: activeChat.message, ai: activeChat.reply }]).map((turn, i) => (
+                <div key={i} className="space-y-1">
+                  <div className="text-right text-blue-400 text-sm">{turn.user}</div>
+                  <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap reply-box">{turn.ai || "No reply yet."}</div>
+                </div>
+              ))}
 
               <div className="flex items-center gap-3 mt-3">
                 {activeChat.pdf_url && (
@@ -632,14 +578,9 @@ export default function Chat() {
                   <Copy size={14} /> Copy
                 </button>
 
-                <button
-  onClick={regenerateLast}
-  disabled={loading}
-  className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2"
->
-  <RotateCw size={14} /> {loading ? "Regenerating..." : "Regenerate"}
-</button>
-
+                <button onClick={() => regenerateLast(activeChat)} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2">
+                  <RotateCw size={14} /> Regenerate
+                </button>
 
                 {loading && (
                   <button onClick={stopGenerating} className="text-sm px-3 py-1 rounded bg-[#7f1d1d] hover:bg-[#9b1f1f] border border-gray-700 flex items-center gap-2">
