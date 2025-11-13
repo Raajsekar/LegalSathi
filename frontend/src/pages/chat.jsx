@@ -489,6 +489,25 @@ export default function Chat() {
       (c.message && c.message.toLowerCase().includes(searchQuery.toLowerCase())) ||
       (c.reply && c.reply.toLowerCase().includes(searchQuery.toLowerCase()))
   );
+const deleteConversation = async (id) => {
+  if (!id) return;
+
+  const ok = confirm("Delete this chat permanently?");
+  if (!ok) return;
+
+  try {
+    await axios.delete(`${API_BASE}/api/delete_conversation/${id}`);
+
+    // Remove from sidebar
+    setChats((prev) => prev.filter((c) => c._id !== id));
+
+    // If active chat is deleted, pick next available
+    setActiveChat((prev) => (prev?._id === id ? null : prev));
+  } catch (err) {
+    console.error("Delete failed", err);
+    alert("Failed to delete chat. Try again.");
+  }
+};
 
   return (
     <div className="flex h-screen bg-[#0b0b0d] text-gray-100">
@@ -525,15 +544,37 @@ export default function Chat() {
           )}
 
           {filtered.map((c, i) => (
-            <div
-              key={c._id || i}
-              onClick={() => setActiveChat(c)}
-              className={`p-3 rounded-lg cursor-pointer transition-colors text-sm ${activeChat === c ? "bg-[#1b1c20]" : "bg-[#121214] hover:bg-[#18181b]"}`}
-            >
-              <div className="truncate font-medium">{c.message || "Untitled"}</div>
-              <div className="text-xs text-gray-500 mt-1 line-clamp-2">{(c.reply || "").substring(0, 140)}</div>
-            </div>
-          ))}
+  <div
+    key={c._id || i}
+    className={`p-3 rounded-lg flex items-start justify-between gap-2 cursor-pointer transition-colors text-sm ${
+      activeChat === c ? "bg-[#1b1c20]" : "bg-[#121214] hover:bg-[#18181b]"
+    }`}
+    onClick={() => setActiveChat(c)}
+  >
+    {/* LEFT SIDE – CHAT TITLE & PREVIEW */}
+    <div className="flex-1">
+      <div className="truncate font-medium">
+        {c.message || "Untitled"}
+      </div>
+      <div className="text-xs text-gray-500 mt-1 line-clamp-2">
+        {(c.reply || "").substring(0, 140)}
+      </div>
+    </div>
+
+    {/* RIGHT SIDE – DELETE BUTTON */}
+    <button
+      title="Delete chat"
+      onClick={(e) => {
+        e.stopPropagation();       // prevents opening the chat
+        deleteConversation(c._id); // call your delete function
+      }}
+      className="text-red-400 hover:text-red-300"
+    >
+      <X size={14} />
+    </button>
+  </div>
+))}
+
         </div>
 
         <div className="p-3 border-t border-gray-800 flex items-center gap-2">
@@ -575,27 +616,35 @@ export default function Chat() {
                 </div>
               ))}
 
-              <div className="flex items-center gap-3 mt-3">
-                {activeChat.pdf_url && (
-                  <a href={activeChat.pdf_url.startsWith("http") ? activeChat.pdf_url : `${API_BASE}${activeChat.pdf_url}`} target="_blank" rel="noreferrer" className="text-blue-400 hover:underline flex items-center gap-2">
-                    <FileText size={16} /> Download PDF
-                  </a>
-                )}
+              {activeChat.history && activeChat.history.length > 0 && activeChat.history[0].ai && (
+  <div className="flex items-center gap-3 mt-3">
+    {activeChat.pdf_url && (
+      <a
+        href={activeChat.pdf_url.startsWith("http") ? activeChat.pdf_url : `${API_BASE}${activeChat.pdf_url}`}
+        target="_blank"
+        rel="noreferrer"
+        className="text-blue-400 hover:underline flex items-center gap-2"
+      >
+        <FileText size={16} /> Download PDF
+      </a>
+    )}
 
-                <button onClick={() => handleCopy(activeChat.reply)} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2">
-                  <Copy size={14} /> Copy
-                </button>
+    <button onClick={() => handleCopy(activeChat.reply)} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2">
+      <Copy size={14} /> Copy
+    </button>
 
-                <button onClick={() => regenerateLast(activeChat)} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2">
-                  <RotateCw size={14} /> Regenerate
-                </button>
+    <button onClick={() => regenerateLast(activeChat)} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2">
+      <RotateCw size={14} /> Regenerate
+    </button>
 
-                {loading && (
-                  <button onClick={stopGenerating} className="text-sm px-3 py-1 rounded bg-[#7f1d1d] hover:bg-[#9b1f1f] border border-gray-700 flex items-center gap-2">
-                    <Square size={14} /> Stop
-                  </button>
-                )}
-              </div>
+    {loading && (
+      <button onClick={stopGenerating} className="text-sm px-3 py-1 rounded bg-[#7f1d1d] hover:bg-[#9b1f1f] border border-gray-700 flex items-center gap-2">
+        <Square size={14} /> Stop
+      </button>
+    )}
+  </div>
+)}
+
             </article>
           )}
         </section>

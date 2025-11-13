@@ -671,6 +671,23 @@ def new_chat(user_id):
         traceback.print_exc()
         return jsonify({"error": "failed"}), 500
 
+@app.route("/api/delete_conversation/<conv_id>", methods=["DELETE"])
+def delete_conversation(conv_id):
+    try:
+        if db is None:
+            return jsonify({"error": "Database unavailable"}), 500
+
+        # Delete messages inside the conversation
+        db.get_collection("messages").delete_many({"conv_id": ObjectId(conv_id)})
+
+        # Delete the conversation itself
+        db.get_collection("conversations").delete_one({"_id": ObjectId(conv_id)})
+
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        print("delete_conversation error:", e)
+        return jsonify({"error": "failed"}), 500
+
 
 @app.errorhandler(500)
 def internal_error(error):
