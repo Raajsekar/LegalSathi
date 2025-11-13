@@ -185,7 +185,10 @@ export default function Chat() {
       reply: activeChat?.reply || "",
       pdf_url: activeChat?.pdf_url || null,
       timestamp: Date.now() / 1000,
-      history: [...(activeChat?.history || []), { user: cleanMessage, ai: "" }],
+      history: [
+  ...(activeChat?.history || []),
+  { user: cleanMessage, ai: "" }  // added only once
+],
     };
 
     upsertChatEntry(optimisticEntry);
@@ -314,7 +317,10 @@ export default function Chat() {
           reply: aiReply,
           pdf_url,
           timestamp: Date.now() / 1000,
-          history: [...(optimisticEntry.history || []), { user: cleanMessage, ai: aiReply }],
+          history: [
+  ...(activeChat?.history || []).slice(0, -1),
+  { user: cleanMessage, ai: aiReply }
+],
         };
 
         upsertChatEntry(finalEntry);
