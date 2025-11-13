@@ -11,6 +11,8 @@ import {
   BookOpen,
   Calculator,
   X,
+  Mic,
+  MicOff,
 } from "lucide-react";
 import copy from "copy-to-clipboard";
 import "./chat.css";
@@ -29,6 +31,10 @@ export default function Chat() {
   const [searchQuery, setSearchQuery] = useState("");
   const [showGstPanel, setShowGstPanel] = useState(false);
 
+  // voice states
+  const [listening, setListening] = useState(false);
+  const [supportsSpeech, setSupportsSpeech] = useState(false);
+
   // GST calculator states
   const [gstAmount, setGstAmount] = useState("");
   const [gstRate, setGstRate] = useState(18);
@@ -38,9 +44,49 @@ export default function Chat() {
   const [gstTips, setGstTips] = useState([]);
 
   const scrollRef = useRef(null);
+  const recognitionRef = useRef(null);
 
   useEffect(() => {
     if (user) fetchChats();
+    // detect speech API
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      setSupportsSpeech(true);
+      const r = new SpeechRecognition();
+      r.continuous = false;
+      r.interimResults = true;
+      r.lang = "en-IN";
+      recognitionRef.current = r;
+      // handlers
+      r.onresult = (ev) => {
+        let interim = "";
+        let final = "";
+        for (let i = 0; i < ev.results.length; i++) {
+          const res = ev.results[i];
+          if (res.isFinal) final += res[0].transcript;
+          else interim += res[0].transcript;
+        }
+        // show interim in message textarea
+        setMessage((prev) => {
+          // if there was a final, replace; otherwise show interim appended to prev base
+          // To avoid messing up user-typed text, if interim present show as interim appended to prev
+          // We'll keep it simple: if final present set message to previous + final
+          if (final) return (prev ? prev + " " : "") + final;
+          // else show interim overlay by appending (but not committing)
+          return prev.replace(/¶INTERIM:.*/, "") + (interim ? ` ¶INTERIM:${interim}` : "");
+        });
+      };
+      r.onend = () => {
+        setListening(false);
+        // cleanup interim marker if any
+        setMessage((m) => m.replace(/¶INTERIM:.*$/, "").trim());
+      };
+      r.onerror = (e) => {
+        console.warn("Speech error", e);
+        setListening(false);
+      };
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
   useEffect(() => {
@@ -54,52 +100,96 @@ export default function Chat() {
     try {
       const res = await axios.get(`${API_BASE}/api/history/${user.uid}`);
       const items = res.data || [];
-      setChats(items);
-      if (items.length > 0) setActiveChat(items[0]);
+      // ensure each item has history array if not present
+      const normalized = items.map((it) => ({ ...it, history: it.history || (it.message ? [{ user: it.message, ai: it.reply }] : []) }));
+      setChats(normalized);
+      if (normalized.length > 0) setActiveChat(normalized[0]);
     } catch (e) {
       console.error("Fetch error", e);
     }
   };
 
-  // Send message
+  // start/stop speech recognition (textarea mic)
+  const toggleListen = () => {
+    if (!recognitionRef.current) return alert("Speech recognition not supported in this browser.");
+    if (listening) {
+      recognitionRef.current.stop();
+      setListening(false);
+    } else {
+      // remove interim marker before starting
+      setMessage((m) => m.replace(/¶INTERIM:.*$/, ""));
+      recognitionRef.current.start();
+      setListening(true);
+    }
+  };
+
+  // floating mic: continuous dictate then stop (same recognition used)
+  const handleFloatingMic = async () => {
+    toggleListen();
+  };
+
+  // POST /api/chat (text prompt)
   const sendMessage = async () => {
-    if (!message.trim()) return alert("Please type a question or prompt.");
+    // strip interim tokens (if any)
+    const cleanMessage = message.replace(/¶INTERIM:.*$/, "").trim();
+    if (!cleanMessage) return alert("Please type a question or prompt.");
     setLoading(true);
     try {
       const res = await axios.post(`${API_BASE}/api/chat`, {
         user_id: user.uid,
-        message: task === "contract" ? `Draft a contract:\n\n${message}` : message,
+        message: task === "contract" ? `Draft a contract:\n\n${cleanMessage}` : cleanMessage,
       });
 
-      const newMessage = {
-  message,
-  reply: res.data.reply,
-  pdf_url: res.data.pdf_url || res.data.pdf || null,
-  timestamp: Date.now() / 1000,
-};
+      const aiReply = res.data.reply;
+      const pdf_url = res.data.pdf_url || res.data.pdf || null;
 
-// if a chat already exists, append to it
-setChats((prev) => {
-  if (activeChat) {
-    const updated = [...prev];
-    updated[0] = {
-      ...updated[0],
-      history: [
-        ...(updated[0].history || []),
-        { user: message, ai: res.data.reply },
-      ],
-    };
-    return updated;
-  }
-  return [newMessage, ...prev];
-});
+      // Build chat entry
+      const newEntry = {
+        message: cleanMessage,
+        reply: aiReply,
+        pdf_url,
+        timestamp: Date.now() / 1000,
+        history: [{ user: cleanMessage, ai: aiReply }],
+      };
 
-setActiveChat((prev) => ({
-  ...prev,
-  history: [...(prev?.history || []), { user: message, ai: res.data.reply }],
-}));
-setMessage("");
+      // Append to activeChat if exists (so previous conversation continues) else create new
+      setChats((prev) => {
+        if (activeChat && activeChat._id) {
+          // find and update active chat in list (by reference _id if exists)
+          const updated = prev.slice();
+          const idx = updated.findIndex((c) => c._id && activeChat._id && c._id === activeChat._id);
+          if (idx !== -1) {
+            updated[idx] = {
+              ...updated[idx],
+              history: [...(updated[idx].history || []), { user: cleanMessage, ai: aiReply }],
+              reply: aiReply,
+              pdf_url,
+            };
+            // move that updated chat to top
+            const moved = updated.splice(idx, 1)[0];
+            return [moved, ...updated];
+          } else {
+            // no match: just prepend
+            return [newEntry, ...prev];
+          }
+        }
+        // no activeChat or it is placeholder, prepend
+        return [newEntry, ...prev];
+      });
 
+      setActiveChat((prev) => {
+        if (prev && prev._id) {
+          return {
+            ...prev,
+            history: [...(prev.history || []), { user: cleanMessage, ai: aiReply }],
+            reply: aiReply,
+            pdf_url,
+          };
+        }
+        return newEntry;
+      });
+
+      setMessage("");
     } catch (e) {
       console.error("Send error", e);
       alert("Failed to send message — try again.");
@@ -108,7 +198,7 @@ setMessage("");
     }
   };
 
-  // File upload
+  // POST /api/upload (file upload + summarise/explain)
   const handleUpload = async () => {
     if (!file) return alert("Please select a file first.");
     setLoading(true);
@@ -122,38 +212,52 @@ setMessage("");
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      const newChat = {
+      const aiReply = res.data.reply;
+      const pdf_url = res.data.pdf_url || res.data.pdf || null;
+
+      const newEntry = {
         message: `📄 ${file.name}`,
-        reply: res.data.reply,
-        pdf_url: res.data.pdf_url || res.data.pdf || null,
+        reply: aiReply,
+        pdf_url,
         timestamp: Date.now() / 1000,
+        history: [{ user: `📄 ${file.name}`, ai: aiReply }],
       };
 
       setChats((prev) => {
-  if (activeChat) {
-    const updated = [...prev];
-    updated[0] = {
-      ...updated[0],
-      history: [
-        ...(updated[0].history || []),
-        { user: `📄 ${file.name}`, ai: res.data.reply },
-      ],
-    };
-    return updated;
-  }
-  return [newChat, ...prev];
-});
+        if (activeChat && activeChat._id) {
+          // append into existing active chat
+          const updated = prev.slice();
+          const idx = updated.findIndex((c) => c._id && activeChat._id && c._id === activeChat._id);
+          if (idx !== -1) {
+            updated[idx] = {
+              ...updated[idx],
+              history: [...(updated[idx].history || []), { user: `📄 ${file.name}`, ai: aiReply }],
+              reply: aiReply,
+              pdf_url,
+            };
+            const moved = updated.splice(idx, 1)[0];
+            return [moved, ...updated];
+          } else {
+            return [newEntry, ...prev];
+          }
+        }
+        return [newEntry, ...prev];
+      });
 
-setActiveChat((prev) => ({
-  ...prev,
-  history: [
-    ...(prev?.history || []),
-    { user: `📄 ${file.name}`, ai: res.data.reply },
-  ],
-}));
-setFile(null);
-setFileName("");
+      setActiveChat((prev) => {
+        if (prev && prev._id) {
+          return {
+            ...prev,
+            history: [...(prev.history || []), { user: `📄 ${file.name}`, ai: aiReply }],
+            reply: aiReply,
+            pdf_url,
+          };
+        }
+        return newEntry;
+      });
 
+      setFile(null);
+      setFileName("");
     } catch (e) {
       console.error("Upload error", e);
       alert("Upload failed — ensure PDF/DOCX/TXT and try again.");
@@ -168,6 +272,7 @@ setFileName("");
     setFileName(f ? f.name : "");
   };
 
+  // copy reply
   const handleCopy = (text) => {
     copy(text || "");
     const el = document.createElement("div");
@@ -177,18 +282,20 @@ setFileName("");
     setTimeout(() => el.remove(), 1300);
   };
 
+  // Reset conversation: create placeholder new chat but do NOT delete backend history
   const handleResetConversation = () => {
     const placeholder = {
       message: "New conversation",
       reply: "Start by asking a question or uploading a file.",
       timestamp: Date.now() / 1000,
       pdf_url: null,
+      history: [{ user: "New conversation", ai: "Start by asking a question or uploading a file." }],
     };
     setChats((prev) => [placeholder, ...prev]);
     setActiveChat(placeholder);
   };
 
-  // GST calculator actions
+  // GST tools
   const calculateGst = async () => {
     if (!gstAmount) return alert("Enter an amount first.");
     try {
@@ -216,6 +323,7 @@ setFileName("");
 
   useEffect(() => {
     if (showGstPanel) loadGstTips();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showGstPanel]);
 
   const filtered = chats.filter(
@@ -273,14 +381,10 @@ setFileName("");
               key={i}
               onClick={() => setActiveChat(c)}
               className={`p-3 rounded-lg cursor-pointer transition-colors text-sm ${
-                activeChat === c
-                  ? "bg-[#1b1c20]"
-                  : "bg-[#121214] hover:bg-[#18181b]"
+                activeChat === c ? "bg-[#1b1c20]" : "bg-[#121214] hover:bg-[#18181b]"
               }`}
             >
-              <div className="truncate font-medium">
-                {c.message || "Untitled"}
-              </div>
+              <div className="truncate font-medium">{c.message || "Untitled"}</div>
               <div className="text-xs text-gray-500 mt-1 line-clamp-2">
                 {(c.reply || "").substring(0, 140)}
               </div>
@@ -295,10 +399,7 @@ setFileName("");
               {user?.email || user?.displayName || "User"}
             </strong>
           </div>
-          <button
-            onClick={() => auth.signOut()}
-            className="text-red-400 hover:text-red-300"
-          >
+          <button onClick={() => auth.signOut()} className="text-red-400 hover:text-red-300">
             <LogOut size={16} />
           </button>
         </div>
@@ -329,125 +430,109 @@ setFileName("");
             >
               <Calculator size={14} /> GST / Tax Tools
             </button>
-            <button
-              onClick={() => fetchChats()}
-              className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700"
-            >
+            <button onClick={() => fetchChats()} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700">
               Refresh
             </button>
           </div>
         </header>
 
-<section className="flex-1 overflow-y-auto p-6" ref={scrollRef}>
-  {!activeChat ? (
-    <div className="text-gray-500 text-center mt-28">
-      Pick a chat or start a new one.
-    </div>
-  ) : (
-    <article className="max-w-3xl mx-auto space-y-4">
-      {/* Display full conversation history if available */}
-      {(activeChat.history || [
-        { user: activeChat.message, ai: activeChat.reply },
-      ]).map((turn, i) => (
-        <div key={i} className="space-y-1">
-          <div className="text-right text-blue-400 text-sm">
-            {turn.user}
-          </div>
+        <section className="flex-1 overflow-y-auto p-6 chat-content" ref={scrollRef}>
+          {!activeChat ? (
+            <div className="text-gray-500 text-center mt-28">Pick a chat or start a new one.</div>
+          ) : (
+            <article className="max-w-3xl mx-auto space-y-4">
+              {/* Conversation history */}
+              {(activeChat.history || [{ user: activeChat.message, ai: activeChat.reply }]).map((turn, i) => (
+                <div key={i} className="space-y-1">
+                  <div className="text-right text-blue-400 text-sm">
+                    {turn.user}
+                  </div>
 
-          <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap">
-            {turn.ai || "No reply yet."}
-          </div>
-        </div>
-      ))}
+                  <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap reply-box">
+                    {turn.ai || "No reply yet."}
+                  </div>
+                </div>
+              ))}
 
-      {/* PDF download + Copy actions (kept exactly same) */}
-      <div className="flex items-center gap-3 mt-3">
-        {activeChat.pdf_url && (
-          <a
-            href={
-              activeChat.pdf_url.startsWith("http")
-                ? activeChat.pdf_url
-                : `${API_BASE}${activeChat.pdf_url}`
-            }
-            target="_blank"
-            rel="noreferrer"
-            className="text-blue-400 hover:underline flex items-center gap-2"
-          >
-            <FileText size={16} /> Download PDF
-          </a>
-        )}
+              {/* PDF download + Copy actions */}
+              <div className="flex items-center gap-3 mt-3">
+                {activeChat.pdf_url && (
+                  <a
+                    href={activeChat.pdf_url.startsWith("http") ? activeChat.pdf_url : `${API_BASE}${activeChat.pdf_url}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-blue-400 hover:underline flex items-center gap-2"
+                  >
+                    <FileText size={16} /> Download PDF
+                  </a>
+                )}
 
-        <button
-          onClick={() => handleCopy(activeChat.reply)}
-          className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2"
-        >
-          <Copy size={14} /> Copy
-        </button>
-      </div>
-    </article>
-  )}
-</section>
+                <button onClick={() => handleCopy(activeChat.reply)} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2">
+                  <Copy size={14} /> Copy
+                </button>
+              </div>
+            </article>
+          )}
+        </section>
 
-
-
+        {/* composer */}
         <footer className="p-4 border-t border-gray-800 bg-[#0f1012]">
-          <div className="max-w-6xl mx-auto flex items-center gap-3">
-            <input
-              id="file-input"
-              type="file"
-              accept=".pdf,.docx,.txt"
-              onChange={onFileChange}
-              className="hidden"
-            />
-            <label
-              htmlFor="file-input"
-              className="cursor-pointer px-3 py-2 bg-[#121214] border border-gray-700 rounded flex items-center gap-2 text-sm"
-            >
+          <div className="max-w-6xl mx-auto flex items-center gap-3 composer-row">
+            <input id="file-input" type="file" accept=".pdf,.docx,.txt" onChange={onFileChange} className="hidden" />
+            <label htmlFor="file-input" className="cursor-pointer px-3 py-2 bg-[#121214] border border-gray-700 rounded flex items-center gap-2 text-sm">
               <Upload size={14} /> {fileName ? fileName : "Choose file"}
             </label>
 
-            <textarea
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              placeholder={
-                task === "contract"
-                  ? "Describe the contract you want (parties, duration, rent, deposit, special clauses)..."
-                  : "Type your question or paste text here..."
-              }
-              className="flex-1 bg-[#121214] border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 min-h-[64px] resize-none placeholder-gray-500"
-            />
+            <div className="flex-1 relative textarea-wrapper">
+              <textarea
+                value={message.replace(/¶INTERIM:.*$/, "")}
+                onChange={(e) => setMessage(e.target.value)}
+                placeholder={task === "contract" ? "Describe the contract you want (parties, duration, rent, deposit, special clauses)..." : "Type your question or paste text here..."}
+                className="composer-textarea"
+                rows={2}
+              />
+
+              {/* inline mic inside textarea corner */}
+              {supportsSpeech && (
+                <button
+                  title={listening ? "Stop recording" : "Record voice"}
+                  onClick={toggleListen}
+                  className={`textarea-mic ${listening ? "listening" : ""}`}
+                >
+                  {listening ? <MicOff size={16} /> : <Mic size={16} />}
+                </button>
+              )}
+            </div>
 
             <div className="flex flex-col gap-2">
-              <button
-                onClick={() => (file ? handleUpload() : sendMessage())}
-                disabled={loading}
-                className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded text-sm"
-              >
-                {loading
-                  ? "Processing..."
-                  : file
-                  ? task === "summarize"
-                    ? "Summarize"
-                    : task === "contract"
-                    ? "Draft"
-                    : "Explain"
-                  : "Send"}
+              <button onClick={() => (file ? handleUpload() : sendMessage())} disabled={loading} className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded text-sm">
+                {loading ? "Processing..." : file ? (task === "summarize" ? "Summarize" : task === "contract" ? "Draft" : "Explain") : "Send"}
               </button>
 
-              <button
-                onClick={() => {
-                  setMessage("");
-                  setFile(null);
-                  setFileName("");
-                }}
-                className="text-xs text-gray-400 underline"
-              >
+              <button onClick={() => { setMessage(""); setFile(null); setFileName(""); }} className="text-xs text-gray-400 underline">
                 Clear composer
               </button>
             </div>
           </div>
+
+          {/* disclaimer line */}
+          <div className="max-w-6xl mx-auto mt-3 text-xs text-gray-400">
+            ⚠️ <strong>LegalSathi can make mistakes.</strong> Check important info and cross-verify before using for legal decisions.
+          </div>
         </footer>
       </main>
+
+      {/* floating mic bubble */}
+      {supportsSpeech && (
+        <button
+          className={`floating-mic ${listening ? "listening" : ""}`}
+          onClick={handleFloatingMic}
+          title={listening ? "Stop listening" : "Open voice input"}
+        >
+          {listening ? <MicOff size={20} /> : <Mic size={20} />}
+          <span className="mic-wave" aria-hidden />
+        </button>
+      )}
 
       {/* GST / Tax Tool Panel */}
       {showGstPanel && (
@@ -456,57 +541,31 @@ setFileName("");
             <h3 className="font-semibold text-lg flex items-center gap-2">
               <Calculator size={16} /> GST / Tax Tools
             </h3>
-            <button
-              onClick={() => setShowGstPanel(false)}
-              className="text-gray-400 hover:text-gray-200"
-            >
+            <button onClick={() => setShowGstPanel(false)} className="text-gray-400 hover:text-gray-200">
               <X size={16} />
             </button>
           </div>
 
           <div className="space-y-2">
-            <input
-              type="number"
-              placeholder="Enter amount (₹)"
-              value={gstAmount}
-              onChange={(e) => setGstAmount(e.target.value)}
-              className="w-full bg-[#1a1a1d] border border-gray-700 rounded px-3 py-2 text-sm text-gray-200"
-            />
+            <input type="number" placeholder="Enter amount (₹)" value={gstAmount} onChange={(e) => setGstAmount(e.target.value)} className="w-full bg-[#1a1a1d] border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" />
             <div className="flex items-center gap-2">
-              <select
-                value={gstRate}
-                onChange={(e) => setGstRate(e.target.value)}
-                className="flex-1 bg-[#1a1a1d] border border-gray-700 rounded px-3 py-2 text-sm text-gray-200"
-              >
+              <select value={gstRate} onChange={(e) => setGstRate(e.target.value)} className="flex-1 bg-[#1a1a1d] border border-gray-700 rounded px-3 py-2 text-sm text-gray-200">
                 <option value="5">5%</option>
                 <option value="12">12%</option>
                 <option value="18">18%</option>
                 <option value="28">28%</option>
               </select>
               <label className="text-xs flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  checked={inclusive}
-                  onChange={(e) => setInclusive(e.target.checked)}
-                />
+                <input type="checkbox" checked={inclusive} onChange={(e) => setInclusive(e.target.checked)} />
                 Inclusive
               </label>
               <label className="text-xs flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  checked={interstate}
-                  onChange={(e) => setInterstate(e.target.checked)}
-                />
+                <input type="checkbox" checked={interstate} onChange={(e) => setInterstate(e.target.checked)} />
                 Interstate
               </label>
             </div>
 
-            <button
-              onClick={calculateGst}
-              className="w-full bg-blue-600 hover:bg-blue-500 rounded py-2 mt-2 text-sm"
-            >
-              Calculate
-            </button>
+            <button onClick={calculateGst} className="w-full bg-blue-600 hover:bg-blue-500 rounded py-2 mt-2 text-sm">Calculate</button>
 
             {gstResult && (
               <div className="bg-[#1a1a1d] border border-gray-700 rounded p-3 mt-3 text-sm">
@@ -520,18 +579,13 @@ setFileName("");
                     <div>SGST: ₹{gstResult.sgst}</div>
                   </>
                 )}
-                <div className="mt-2 font-semibold text-blue-400">
-                  Total: ₹{gstResult.total_amount}
-                </div>
+                <div className="mt-2 font-semibold text-blue-400">Total: ₹{gstResult.total_amount}</div>
               </div>
             )}
 
-            {/* Tips */}
             {gstTips.length > 0 && (
               <div className="mt-4 border-t border-gray-700 pt-3">
-                <div className="text-sm font-semibold mb-1 text-gray-300">
-                  GST / Tax Tips:
-                </div>
+                <div className="text-sm font-semibold mb-1 text-gray-300">GST / Tax Tips:</div>
                 <ul className="space-y-1 text-xs text-gray-400 max-h-32 overflow-y-auto">
                   {gstTips.map((t, i) => (
                     <li key={i}>• {t.title}: {t.description}</li>

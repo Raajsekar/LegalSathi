@@ -1,25 +1,147 @@
-/* chat.css: simple styles for dark chat UI */
-textarea, input {
-  color: #e6eef8;
+/* chat.css - add these styles (merge if you have existing rules) */
+
+/* Page / content sizes to mimic ChatGPT feel */
+.chat-content {
+  background: linear-gradient(180deg, rgba(6,6,7,0.6), rgba(6,6,7,0.6));
 }
-textarea::placeholder, input::placeholder {
-  color: #9aa1aa;
+.reply-box {
+  font-size: 15px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
+
+/* Composer */
+.composer-row { gap: 12px; }
+.composer-textarea {
+  width: 100%;
+  min-height: 64px;
+  max-height: 220px;
+  resize: none;
+  padding: 12px;
+  border-radius: 10px;
+  outline: none;
+  font-size: 15px;
+  background: #121214;
+  border: 1px solid #2a2a2f;
+  color: #e6e6e6;
+  box-sizing: border-box;
+}
+
+/* textarea wrapper for relative mic */
+.textarea-wrapper { position: relative; }
+
+/* mic inside textarea */
+.textarea-mic {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  background: #0f1012;
+  border: 1px solid rgba(255,255,255,0.03);
+  padding: 6px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #cfcfcf;
+}
+.textarea-mic.listening {
+  color: #fff;
+  box-shadow: 0 0 0 6px rgba(59,130,246,0.12);
+  animation: mic-pulse 1.4s infinite;
+}
+@keyframes mic-pulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.06); }
+  100% { transform: scale(1); }
+}
+
+/* floating mic */
+.floating-mic {
+  position: fixed;
+  right: 24px;
+  bottom: 90px;
+  z-index: 60;
+  width: 56px;
+  height: 56px;
+  border-radius: 9999px;
+  background: linear-gradient(180deg,#0ea5e9,#0369a1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 30px rgba(2,6,23,0.6);
+  color: white;
+  border: none;
+  cursor: pointer;
+  transition: transform .12s ease, box-shadow .12s ease;
+}
+.floating-mic:hover { transform: translateY(-3px); }
+.floating-mic.listening { box-shadow: 0 10px 40px rgba(2,6,23,0.8); animation: mic-wave-outer 1.6s infinite; }
+
+/* small animated ring */
+.floating-mic .mic-wave {
+  position: absolute;
+  width: 80px;
+  height: 80px;
+  border-radius: 9999px;
+  border: 2px solid rgba(59,130,246,0.18);
+  opacity: 0;
+  animation: wave 1.6s infinite;
+}
+.floating-mic.listening .mic-wave { opacity: 1; }
+
+@keyframes wave {
+  0% { transform: scale(0.6); opacity: .6; }
+  100% { transform: scale(1.8); opacity: 0; }
+}
+@keyframes mic-wave-outer {
+  0% { box-shadow: 0 0 0 0 rgba(59,130,246,0.2); }
+  50% { box-shadow: 0 0 0 10px rgba(59,130,246,0.06); }
+  100% { box-shadow: 0 0 0 0 rgba(59,130,246,0.0); }
+}
+
+/* copy toast */
 .copy-toast {
   position: fixed;
   right: 20px;
-  bottom: 30px;
-  background: rgba(20,20,22,0.95);
-  color: #dbe7ff;
+  bottom: 140px;
+  background: rgba(17,24,39,0.95);
+  color: #e6f0ff;
   padding: 8px 12px;
   border-radius: 8px;
-  box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+  box-shadow: 0 10px 30px rgba(2,6,23,0.6);
   z-index: 9999;
   font-size: 13px;
 }
-.line-clamp-2 {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+
+/* smaller helper */
+.textarea-mic svg { display: block; }
+
+/* scrollbar styling for chat column */
+.chat-content::-webkit-scrollbar, .flex-1::-webkit-scrollbar {
+  width: 10px;
+  height: 8px;
 }
+.chat-content::-webkit-scrollbar-thumb, .flex-1::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.05);
+  border-radius: 999px;
+}
+.chat-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ensure reply box width similar to chatGPT: max width & center */
+.reply-box { max-width: 900px; }
+
+/* small responsiveness */
+@media (max-width: 900px) {
+  .floating-mic { right: 14px; bottom: 80px; }
+  .aside { display: none; }
+}
+
+/* hint text - small and muted */
+.footer-note { color: #9ca3af; font-size: 12px; }
+
+/* line-clamp support helper */
+.line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
