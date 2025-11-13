@@ -246,7 +246,11 @@ export default function Chat() {
                   updated[idx] = {
                     ...updated[idx],
                     reply: accumulated,
-                    history: [...(updated[idx].history || []).slice(0, -1), { user: cleanMessage, ai: accumulated }],
+                    history: [
+  ...(updated[idx].history || []),
+  { user: cleanMessage, ai: accumulated }
+],
+
                   };
                   return updated;
                 });
@@ -279,7 +283,14 @@ export default function Chat() {
                 const updated = prev.slice();
                 const idx = updated.findIndex((c) => c._id === optimisticEntry._id);
                 if (idx !== -1) {
-                  updated[idx] = { ...updated[idx], reply: accumulated, history: [...(updated[idx].history || []).slice(0, -1), { user: cleanMessage, ai: accumulated }] };
+                  updated[idx] = { ...updated[idx], reply: accumulated, history: [
+  ...(updated[idx].history || []).map((h, index) =>
+    index === updated[idx].history.length - 1
+      ? { user: cleanMessage, ai: accumulated }
+      : h
+  )
+]
+ };
                 }
                 return updated;
               });
@@ -318,10 +329,10 @@ export default function Chat() {
           pdf_url,
           timestamp: Date.now() / 1000,
           history: [
-  ...(activeChat?.history || []).slice(0, -1),
+  ...(activeChat?.history || []),
   { user: cleanMessage, ai: aiReply }
-]
-,
+],
+
         };
 
         upsertChatEntry(finalEntry);
