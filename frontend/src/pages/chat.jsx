@@ -239,101 +239,130 @@ title: activeChat?.title || cleanMessage,
   accumulated += obj.chunk;
 
   // update chats array immutably: attach/replace assistant partial message
-  setChats((prev) => {
-    return prev.map((c) => {
-      if (c._id !== optimisticEntry._id) return c;
-      return {
-  ...c,
-  reply: accumulated,
-  messages: [
-    ...(c.messages || []),
-    { role: "assistant", content: accumulated }
-  ],
-};
+  // PARTIAL chunk: append or replace last assistant draft (do NOT remove older assistant messages)
+setChats((prev) =>
+  prev.map((c) => {
+    if (c._id !== optimisticEntry._id) return c;
 
-    });
-  });
+    const msgs = c.messages ? [...c.messages] : [];
 
-  // update activeChat if it matches the optimistic entry id
-  setActiveChat((prev) => {
-    if (!prev) return prev;
-    if (prev._id !== optimisticEntry._id) return prev;
-    return {
-  ...prev,
-  reply: accumulated,
-  messages: [
-    ...(prev.messages || []),
-    { role: "assistant", content: accumulated }
-  ],
-};
+    // If last message is assistant, replace its content (draft); else push a new assistant draft
+    if (msgs.length && msgs[msgs.length - 1].role === "assistant") {
+      msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], content: accumulated };
+    } else {
+      msgs.push({ role: "assistant", content: accumulated });
+    }
 
-  });
+    return { ...c, reply: accumulated, messages: msgs, last_message: accumulated };
+  })
+);
+
+// Update activeChat similarly
+setActiveChat((prev) => {
+  if (!prev || prev._id !== optimisticEntry._id) return prev;
+
+  const msgs = prev.messages ? [...prev.messages] : [];
+
+  if (msgs.length && msgs[msgs.length - 1].role === "assistant") {
+    msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], content: accumulated };
+  } else {
+    msgs.push({ role: "assistant", content: accumulated });
+  }
+
+  return { ...prev, reply: accumulated, messages: msgs, last_message: accumulated };
+});
+
 }
  
 else if (obj.done) {
   const convId = obj.conv_id || existingConvId || optimisticEntry._id;
-  // update chats: replace local id, set title if missing, and move the updated chat to top
-  setChats((prev) => {
-    // 1) map over and update matching local entry
-    const mapped = prev.map((c) => {
-      if (c._id !== optimisticEntry._id) return c;
-      return {
-        ...c,
-        _id: convId,
-        reply: accumulated,
-        title: c.title || cleanMessage,
-last_message: accumulated,
 
-        messages: (c.messages || []).filter((m) => m.role !== "assistant").concat({ role: "assistant", content: accumulated }),
-      };
-    });
+// update chats: set final assistant message, preserve history, move to top
+setChats((prev) => {
+  const mapped = prev.map((c) => {
+    if (c._id !== optimisticEntry._id) return c;
 
-    // 2) if id was changed (local -> convId) make sure final item is at front
-    const idx = mapped.findIndex((c) => c._id === convId);
-    if (idx > -1) {
-      const copy = mapped.slice();
-      const moved = copy.splice(idx, 1)[0];
-      return [moved, ...copy];
+    const msgs = c.messages ? [...c.messages] : [];
+
+    // replace last assistant draft or append final assistant message
+    if (msgs.length && msgs[msgs.length - 1].role === "assistant") {
+      msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], content: accumulated };
+    } else {
+      msgs.push({ role: "assistant", content: accumulated });
     }
-    return mapped;
-  });
 
-  // update activeChat if it matches (handle local->convId swap)
-  setActiveChat((prev) => {
-    if (!prev) return prev;
-    if (prev._id !== optimisticEntry._id && prev._id !== convId) return prev;
     return {
-      ...prev,
+      ...c,
       _id: convId,
-      reply: accumulated,
-      title: prev.title || cleanMessage,
-      message: prev.message || cleanMessage,
-      messages: (prev.messages || []).filter((m) => m.role !== "assistant").concat({ role: "assistant", content: accumulated }),
+      messages: msgs,
+      last_message: accumulated,
+      title: c.title || cleanMessage
     };
   });
+
+  // move updated chat to front
+  const idx = mapped.findIndex((c) => c._id === convId);
+  if (idx > -1) {
+    const copy = mapped.slice();
+    const moved = copy.splice(idx, 1)[0];
+    return [moved, ...copy];
+  }
+  return mapped;
+});
+
+// update activeChat (handle local->convId swap)
+setActiveChat((prev) => {
+  if (!prev) return prev;
+  if (prev._id !== optimisticEntry._id && prev._id !== convId) return prev;
+
+  const msgs = prev.messages ? [...prev.messages] : [];
+  if (msgs.length && msgs[msgs.length - 1].role === "assistant") {
+    msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], content: accumulated };
+  } else {
+    msgs.push({ role: "assistant", content: accumulated });
+  }
+
+  return {
+    ...prev,
+    _id: convId,
+    messages: msgs,
+    reply: accumulated,
+    last_message: accumulated,
+    title: prev.title || cleanMessage
+  };
+});
+;
 }
 
             } 
             catch (e) {
-              // Not JSON -- try to treat as plain text chunk
-              accumulated += chunk;
-              setChats((prev) => {
-                const updated = prev.slice();
-                const idx = updated.findIndex((c) => c._id === optimisticEntry._id);
-                if (idx !== -1) {
-                  updated[idx] = {
-  ...updated[idx],
-  last_message: accumulated,
-  messages: [
-    ...(c.messages || []).filter(m => m.role !== "assistant"),
-    { role: "assistant", content: accumulated }
-  ]
-};
+              // Not JSON fallback: treat chunk as plain text continuation for assistant
+accumulated += chunk;
 
-                }
-                return updated;
-              });
-              setActiveChat((prev) => prev ? { ...prev, reply: accumulated } : prev);
+setChats((prev) =>
+  prev.map((c) => {
+    if (c._id !== optimisticEntry._id) return c;
+    const msgs = c.messages ? [...c.messages] : [];
+    if (msgs.length && msgs[msgs.length - 1].role === "assistant") {
+      msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], content: accumulated };
+    } else {
+      msgs.push({ role: "assistant", content: accumulated });
+    }
+    return { ...c, reply: accumulated, messages: msgs, last_message: accumulated };
+  })
+);
+
+setActiveChat((prev) => {
+  if (!prev || prev._id !== optimisticEntry._id) return prev;
+  const msgs = prev.messages ? [...prev.messages] : [];
+  if (msgs.length && msgs[msgs.length - 1].role === "assistant") {
+    msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], content: accumulated };
+  } else {
+    msgs.push({ role: "assistant", content: accumulated });
+  }
+  return { ...prev, reply: accumulated, messages: msgs, last_message: accumulated };
+});
+
             }
           }
         }
