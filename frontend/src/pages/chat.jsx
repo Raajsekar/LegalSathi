@@ -198,7 +198,9 @@ export default function Chat() {
     const payload = {
       user_id: user.uid,
       conv_id: existingConvId || null,
-      message: cleanMessage,
+      message: activeChat?.message || cleanMessage,
+title: activeChat?.title || cleanMessage,
+
     };
 
     try {
@@ -361,7 +363,9 @@ last_message: accumulated,
 
         const finalEntry = {
           _id: convId,
-          message: cleanMessage,
+          message: activeChat?.message || cleanMessage,
+title: activeChat?.title || cleanMessage,
+
           reply: aiReply,
           pdf_url,
           timestamp: Date.now() / 1000,
