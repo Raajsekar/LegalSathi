@@ -114,27 +114,27 @@ export default function Chat() {
     }
   }, [activeChat, chats]);
 
-  // --- API: fetch history ---
+    // --- API: fetch conversations (updated to conversations endpoint) ---
   const fetchChats = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/api/history/${user.uid}`);
+      const res = await axios.get(`${API_BASE}/api/conversations/${user.uid}`);
       const items = res.data || [];
-      // Normalize: ensure history array and _id present
-      const normalized = items.map((it) => {
-        // prefer conv id fields from backend
-        const id = it.conv_id || it._id || it._id_str || it._id?.toString();
-        return {
-          ...it,
-          _id: id || it._id || undefined,
-          history: it.history || (it.message ? [{ user: it.message, ai: it.reply }] : []),
-        };
-      });
+      // Normalize to older UI shape if your UI expects message/reply/history
+      const normalized = items.map((it) => ({
+        ...it,
+        _id: it._id || it._id_str,
+        // keep backward-compatible fields for older parts of UI:
+        message: it.title || "",
+        reply: it.last_message || "",
+        history: it.messages ? it.messages.map((m) => m.role === "user" ? { user: m.content, ai: "" } : { user: "", ai: m.content }) : []
+      }));
       setChats(normalized);
-      if (normalized.length > 0) setActiveChat(normalized[0]);
+      if (normalized.length > 0 && !activeChat) setActiveChat(normalized[0]);
     } catch (e) {
-      console.error("Fetch error", e);
+      console.error("Fetch conversations error", e);
     }
   };
+
 
   // --- Utility: save chat entry locally and keep top-most ordering ---
   const upsertChatEntry = (entry) => {
@@ -491,23 +491,18 @@ export default function Chat() {
   );
 const deleteConversation = async (id) => {
   if (!id) return;
-
-  const ok = confirm("Delete this chat permanently?");
-  if (!ok) return;
-
+  if (!confirm("Delete this chat permanently?")) return;
   try {
-    await axios.delete(`${API_BASE}/api/delete_conversation/${id}`);
-
-    // Remove from sidebar
+    await axios.delete(`${API_BASE}/api/conversation/${id}`);
+    // remove locally
     setChats((prev) => prev.filter((c) => c._id !== id));
-
-    // If active chat is deleted, pick next available
-    setActiveChat((prev) => (prev?._id === id ? null : prev));
-  } catch (err) {
-    console.error("Delete failed", err);
-    alert("Failed to delete chat. Try again.");
+    if (activeChat?._id === id) setActiveChat(null);
+  } catch (e) {
+    console.error("Delete error", e);
+    alert("Delete failed");
   }
 };
+
 
   return (
     <div className="flex h-screen bg-[#0b0b0d] text-gray-100">

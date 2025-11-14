@@ -136,38 +136,50 @@ def trim_messages(messages, max_chars=8000):
     return list(reversed(trimmed))
 
 # --- AI helper ---
-def ask_ai(context, user_input):
+def ask_ai(context, prompt):
     """
-    Safe wrapper — trims long prompts to prevent Groq 413 errors.
+    Safe wrapper around Groq. Ensures we always send at least 1 message.
+    Trims content defensively and returns friendly errors if Groq/client missing.
     """
-    if client is None:
-        print("AI client not configured.")
-        return "⚠️ AI not configured. Please contact the admin."
-
     try:
+        if not str(prompt or "").strip():
+            return "⚠️ No input"
 
-        # Build messages list instead of one giant prompt
-        # protect against empty input
-        if not user_input.strip():
-            return "⚠️ No input provided."
+        if client is None:
+            print("AI client not configured.")
+            return "⚠️ AI not configured"
 
-        messages = [
-    {"role": "system", "content": context or "You are LegalSathi, an Indian legal assistant."},
-    {"role": "user", "content": user_input.strip()}
-]
+        sys = (context or "You are LegalSathi.").strip()
 
+        # build messages list
+        messages = []
+        # always include a system message
+        messages.append({"role": "system", "content": sys})
 
-        # 🔥 Trim context to avoid Groq 413 error
-        messages = trim_messages(messages, max_chars=7000)
+        # user content must be present
+        user_content = str(prompt).strip()
+        messages.append({"role": "user", "content": user_content})
 
-        # Call Groq normally
+        # defensive trim (character-based) to avoid very large payloads
+        total_len = sum(len(m["content"]) for m in messages)
+        if total_len > 8000:
+            # trim user content if needed
+            allowed = 8000 - len(sys)
+            if allowed <= 0:
+                messages[1]["content"] = user_content[:2000]
+            else:
+                messages[1]["content"] = user_content[:allowed]
+
+        # final defensive check: ensure messages has at least one element for Groq
+        if not messages:
+            messages = [{"role": "system", "content": "You are LegalSathi."},
+                        {"role": "user", "content": "No input"}]
+
         completion = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=messages
         )
-
         return completion.choices[0].message.content.strip()
-
     except Exception as e:
         print("Groq Error:", e)
         traceback.print_exc()
@@ -310,24 +322,27 @@ def stream_chat():
 # 1. VALIDATE / CREATE CONVERSATION
 # -------------------------
 
-        conv_doc = None  # <--- FIX: Define first
+                # 1. VALIDATE / CREATE CONVERSATION (fixed indentation & DB-absent handling)
+        conv_doc = None
 
         if not conv_id or not is_valid_objectid(conv_id):
-         
-    # Create new conversation
-         conv = create_conversation(
-         user_id,
-         title=message[:50] or "Conversation"
-    )
-         conv_id = str(conv["_id"])
-
+            # Create new conversation (safe if DB is missing)
+            conv = create_conversation(user_id, title=message[:50] or "Conversation")
+            conv_id = conv["_id"]
+            conv_doc = conv
         else:
-         conv_doc = db.get_collection("conversations").find_one(
-        {"_id": ObjectId(conv_id)}
-    )
-        if not conv_doc or conv_doc.get("user_id") != user_id:
-              
-              return jsonify({"error": "Invalid conversation ID"}), 403
+            # conv_id provided — only check DB if db exists
+            if db is not None:
+                try:
+                    conv_doc = db.get_collection("conversations").find_one({"_id": ObjectId(conv_id)})
+                except Exception as e:
+                    conv_doc = None
+                if not conv_doc or conv_doc.get("user_id") != user_id:
+                    return jsonify({"error": "Invalid conversation ID"}), 403
+            else:
+                # DB down: accept provided conv_id as local placeholder
+                conv_doc = {"_id": conv_id, "user_id": user_id}
+
 
 
         
