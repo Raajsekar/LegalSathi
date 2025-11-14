@@ -101,33 +101,63 @@ def calculate_gst(amount: float, rate_percent: float, inclusive=False, interstat
         "inclusive": inclusive,
         "interstate": interstate,
     }
+def trim_messages(messages, max_chars=8000):
+    """
+    Ensure the message history does not exceed max_chars.
+    We trim oldest messages first.
+    """
+    total = sum(len(m["content"]) for m in messages)
+
+    if total <= max_chars:
+        return messages
+
+    trimmed = []
+    running = 0
+
+    # keep only the most recent messages
+    for m in reversed(messages):
+        length = len(m["content"])
+        if running + length <= max_chars:
+            trimmed.append(m)
+            running += length
+        else:
+            break
+
+    # restore chronological order
+    return list(reversed(trimmed))
 
 # --- AI helper ---
 def ask_ai(context, user_input):
     """
-    Sends prompt to Groq model and returns text. Adjust model name if needed.
+    Safe wrapper — trims long prompts to prevent Groq 413 errors.
     """
     if client is None:
         print("AI client not configured.")
         return "⚠️ AI not configured. Please contact the admin."
 
     try:
-        prompt = f"{context}\n\nUser Request:\n{user_input}"
+        # Build messages list instead of one giant prompt
+        messages = [
+            {"role": "system", "content": context or 
+                "You are LegalSathi, an Indian legal AI assistant."},
+            {"role": "user", "content": user_input}
+        ]
+
+        # 🔥 Trim context to avoid Groq 413 error
+        messages = trim_messages(messages, max_chars=7000)
+
+        # Call Groq normally
         completion = client.chat.completions.create(
             model="llama-3.1-8b-instant",
-            messages=[
-                {"role": "system", "content": "You are LegalSathi, an Indian AI legal assistant providing professional and lawful responses."},
-                {"role": "user", "content": prompt},
-            ],
-            # timeout options if SDK supports them could be added
+            messages=messages
         )
+
         return completion.choices[0].message.content.strip()
+
     except Exception as e:
-        # log stacktrace to server logs
         print("Groq Error:", e)
         traceback.print_exc()
-        return "⚠️ Sorry, something went wrong with the AI. Please try again later."
-
+        return "⚠️ Sorry, the AI faced an error. Please try again."
 
 # --- File Text Extractors ---
 def extract_pdf_text(filepath):
@@ -305,6 +335,10 @@ def stream_chat():
         messages_for_ai = [{"role": "system", "content": system_prompt}]
         messages_for_ai.extend(context_msgs)
         messages_for_ai.append({"role": "user", "content": message})
+
+# 🔥 TRIM CONTEXT BEFORE SENDING TO GROQ
+        messages_for_ai = trim_messages(messages_for_ai, max_chars=7500)
+
 
         # -------------------------
         # 4. STREAMING GENERATOR
