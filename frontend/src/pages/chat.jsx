@@ -200,12 +200,11 @@ export default function Chat() {
     const controller = new AbortController();
     abortControllerRef.current = controller;
     const payload = {
-      user_id: user.uid,
-      conv_id: existingConvId || null,
-      message: activeChat?.message || cleanMessage,
-title: activeChat?.title || cleanMessage,
+  user_id: user.uid,
+  conv_id: activeChat?._id || null,   // always use existing chat
+  message: cleanMessage               // do NOT override with activeChat.message
+};
 
-    };
 
     try {
       // Attempt streaming fetch
@@ -275,7 +274,8 @@ setActiveChat((prev) => {
   if (prev._id !== optimisticEntry._id) return prev;
 
   const prevMsgs = prev.messages || [];
-  const withoutLastAssistant = prevMsgs.slice().filter((m) => m.role !== "assistant");
+  const withoutLastAssistant = prevMsgs.slice(0, -1);
+
   const newMsgs = withoutLastAssistant.concat({ role: "assistant", content: accumulated });
 
   return {
@@ -401,9 +401,9 @@ setActiveChat((prev) => {
         const pdf_url = res.data.pdf_url || res.data.pdf || null;
 
         const finalEntry = {
-          _id: convId,
-          message: activeChat?.message || cleanMessage,
-title: activeChat?.title || cleanMessage,
+  _id: convId,
+  title: activeChat?.title || null,   // DO NOT USE cleanMessage
+
 
           reply: aiReply,
           pdf_url,
@@ -458,7 +458,8 @@ title: activeChat?.title || cleanMessage,
     // ✅ ALWAYS use a NEW conversation for file uploads
     // REMOVE → const convId = res.data.conv_id || res.data._id || activeChat?._id || `local-${Date.now()}`;
     // ADD →
-    const convId = res.data.conv_id || res.data._id || `local-${Date.now()}`;
+   const convId = res.data.conv_id;
+
 
     const pdf_url = res.data.pdf_url || null;
 
