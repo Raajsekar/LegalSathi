@@ -116,24 +116,21 @@ export default function Chat() {
 
     // --- API: fetch conversations (updated to conversations endpoint) ---
   const fetchChats = async () => {
-    try {
-      const res = await axios.get(`${API_BASE}/api/conversations/${user.uid}`);
-      const items = res.data || [];
-      // Normalize to older UI shape if your UI expects message/reply/history
-      const normalized = items.map((it) => ({
-        ...it,
-        _id: it._id || it._id_str,
-        // keep backward-compatible fields for older parts of UI:
-        message: it.title || "",
-        reply: it.last_message || "",
-        history: it.messages ? it.messages.map((m) => m.role === "user" ? { user: m.content, ai: "" } : { user: "", ai: m.content }) : []
-      }));
-      setChats(normalized);
-      if (normalized.length > 0 && !activeChat) setActiveChat(normalized[0]);
-    } catch (e) {
-      console.error("Fetch conversations error", e);
+  try {
+    const res = await axios.get(`${API_BASE}/api/conversations/${user.uid}`);
+    const items = res.data || [];
+
+    // DO NOT NORMALIZE ANYTHING
+    setChats(items);
+
+    if (!activeChat && items.length > 0) {
+      setActiveChat(items[0]);
     }
-  };
+  } catch (e) {
+    console.error("Fetch conversations error", e);
+  }
+};
+
 
 
   // --- Utility: save chat entry locally and keep top-most ordering ---
@@ -277,7 +274,8 @@ else if (obj.done) {
         _id: convId,
         reply: accumulated,
         title: c.title || cleanMessage,
-        message: c.message || cleanMessage,
+last_message: accumulated,
+
         messages: (c.messages || []).filter((m) => m.role !== "assistant").concat({ role: "assistant", content: accumulated }),
       };
     });
@@ -516,8 +514,8 @@ else if (obj.done) {
   // Filtered chats for Sidebar search
   const filtered = chats.filter(
     (c) =>
-      (c.message && c.message.toLowerCase().includes(searchQuery.toLowerCase())) ||
-      (c.reply && c.reply.toLowerCase().includes(searchQuery.toLowerCase()))
+      (c.title && c.title.toLowerCase().includes(searchQuery.toLowerCase())) ||
+      (c.last_message && c.last_message.toLowerCase().includes(searchQuery.toLowerCase()))
   );
 const deleteConversation = async (id) => {
   if (!id) return;
