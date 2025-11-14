@@ -799,6 +799,10 @@ def delete_conversation(conv_id):
         print("delete_conversation error:", e)
         return jsonify({"error": "failed"}), 500
 
+@app.route("/api/delete_conversation/<conv_id>", methods=["DELETE"])
+def delete_conversation_alias(conv_id):
+    return delete_conversation(conv_id)
+
 @app.errorhandler(500)
 def internal_error(error):
     print("500 error:", error)

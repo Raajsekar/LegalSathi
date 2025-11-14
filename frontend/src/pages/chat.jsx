@@ -416,17 +416,13 @@ export default function Chat() {
 
   // Reset conversation: create placeholder new chat but do NOT delete backend history
   const handleResetConversation = () => {
-    const placeholder = {
-      _id: `placeholder-${Date.now()}`,
-      message: "",
-      reply: "",
-      timestamp: Date.now() / 1000,
-      pdf_url: null,
-      history: [{ user: "", ai: "" }],
-    };
-    setChats((prev) => [placeholder, ...prev]);
-    setActiveChat(placeholder);
-  };
+  setActiveChat({
+    _id: null,          // new conversation will be created automatically
+    messages: [],
+    title: "New Chat"
+  });
+};
+
 
   // --- GST tools ---
   const calculateGst = async () => {
@@ -503,6 +499,18 @@ const deleteConversation = async (id) => {
   }
 };
 
+const loadConversation = async (conv) => {
+  try {
+    const res = await axios.get(`${API_BASE}/api/conversation/${conv._id}`);
+    setActiveChat({
+      ...conv,
+      messages: res.data
+    });
+  } catch (e) {
+    console.error("Load conversation error", e);
+  }
+};
+
 
   return (
     <div className="flex h-screen bg-[#0b0b0d] text-gray-100">
@@ -544,7 +552,8 @@ const deleteConversation = async (id) => {
     className={`p-3 rounded-lg flex items-start justify-between gap-2 cursor-pointer transition-colors text-sm ${
       activeChat === c ? "bg-[#1b1c20]" : "bg-[#121214] hover:bg-[#18181b]"
     }`}
-    onClick={() => setActiveChat(c)}
+    onClick={() => loadConversation(c)}
+
   >
     {/* LEFT SIDE – CHAT TITLE & PREVIEW */}
     <div className="flex-1">
@@ -604,12 +613,21 @@ const deleteConversation = async (id) => {
             <div className="text-gray-500 text-center mt-28">Pick a chat or start a new one.</div>
           ) : (
             <article className="max-w-3xl mx-auto space-y-4">
-              {(activeChat.history || [{ user: activeChat.message, ai: activeChat.reply }]).map((turn, i) => (
-                <div key={i} className="space-y-1">
-                  <div className="text-right text-blue-400 text-sm">{turn.user}</div>
-                  <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap reply-box">{turn.ai || ""}</div>
-                </div>
-              ))}
+              {(activeChat.messages || []).map((m, i) => (
+    <div key={i} className="space-y-1">
+      {m.role === "user" && (
+        <div className="text-right text-blue-400 text-sm">
+          {m.content}
+        </div>
+      )}
+
+      {m.role === "assistant" && (
+        <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap reply-box">
+          {m.content}
+        </div>
+      )}
+    </div>
+  ))}
 
               {activeChat.history && activeChat.history.length > 0 && activeChat.history[0].ai && (
   <div className="flex items-center gap-3 mt-3">
