@@ -1,5 +1,4 @@
 // Chat.jsx
-
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useAuthState } from "react-firebase-hooks/auth";
@@ -20,9 +19,6 @@ import {
 } from "lucide-react";
 import copy from "copy-to-clipboard";
 import "./chat.css";
-  // add these
-  const [hoveredChatId, setHoveredChatId] = useState(null);
-  const [openMenuId, setOpenMenuId] = useState(null);
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 
@@ -36,7 +32,7 @@ export default function Chat() {
   const [chats, setChats] = useState([]);
   const [activeChat, setActiveChat] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [menuOpen, setMenuOpen] = useState(null); // for 3-dots dropdown
+  
   const [showGstPanel, setShowGstPanel] = useState(false);
 
   // voice states
@@ -121,17 +117,25 @@ export default function Chat() {
 
   // --- API: fetch history ---
   const fetchChats = async () => {
-  try {
-    const res = await axios.get(`${API_BASE}/api/conversations/${user.uid}`);
-    const convs = res.data || [];
-
-    setChats(convs);
-    if (convs.length > 0) setActiveChat(convs[0]);
-  } catch (e) {
-    console.error("Fetch conversations error", e);
-  }
-};
-
+    try {
+      const res = await axios.get(`${API_BASE}/api/history/${user.uid}`);
+      const items = res.data || [];
+      // Normalize: ensure history array and _id present
+      const normalized = items.map((it) => {
+        // prefer conv id fields from backend
+        const id = it.conv_id || it._id || it._id_str || it._id?.toString();
+        return {
+          ...it,
+          _id: id || it._id || undefined,
+          history: it.history || (it.message ? [{ user: it.message, ai: it.reply }] : []),
+        };
+      });
+      setChats(normalized);
+      if (normalized.length > 0) setActiveChat(normalized[0]);
+    } catch (e) {
+      console.error("Fetch error", e);
+    }
+  };
 
   // --- Utility: save chat entry locally and keep top-most ordering ---
   const upsertChatEntry = (entry) => {
@@ -503,20 +507,6 @@ const deleteConversation = async (id) => {
   }
 };
 
-const loadConversation = async (conv) => {
-  try {
-    const res = await axios.get(`${API_BASE}/api/conversation/${conv._id}`);
-    const msgs = res.data;
-
-    setActiveChat({
-      ...conv,
-      messages: msgs
-    });
-  } catch (e) {
-    console.error("Load conversation error", e);
-  }
-};
-
   return (
     <div className="flex h-screen bg-[#0b0b0d] text-gray-100">
       {/* Sidebar */}
@@ -557,8 +547,6 @@ const loadConversation = async (conv) => {
     className={`p-3 rounded-lg flex items-start justify-between gap-2 cursor-pointer transition-colors text-sm ${
       activeChat === c ? "bg-[#1b1c20]" : "bg-[#121214] hover:bg-[#18181b]"
     }`}
-    onMouseEnter={() => setHoveredChatId(c._id)}
-    onMouseLeave={() => { setHoveredChatId((id)=> id === c._id ? null : id); setOpenMenuId(null); }}
     onClick={() => setActiveChat(c)}
   >
     {/* LEFT SIDE – CHAT TITLE & PREVIEW */}
@@ -571,56 +559,19 @@ const loadConversation = async (conv) => {
       </div>
     </div>
 
-    {/* RIGHT SIDE – hover menu icon -> dropdown */}
-    <div className="flex items-center gap-2">
-      {/* show small 3-dot area when hovered or open */}
-      <div className="relative">
-        <button
-          onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === c._id ? null : c._id); }}
-          className={`px-2 py-1 rounded hover:bg-gray-800 ${hoveredChatId === c._id || openMenuId === c._id ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
-          title="Options"
-        >
-          {/* simple three-dot visual */}
-          <span className="inline-block w-1 h-1 rounded-full bg-gray-300 mr-0.5"></span>
-          <span className="inline-block w-1 h-1 rounded-full bg-gray-300 mr-0.5"></span>
-          <span className="inline-block w-1 h-1 rounded-full bg-gray-300"></span>
-        </button>
-
-        {openMenuId === c._id && (
-          <div className="absolute right-0 top-full mt-1 w-40 bg-[#0f1012] border border-gray-700 rounded shadow-lg z-40 text-sm">
-            <button
-              onClick={(e) => { e.stopPropagation(); setOpenMenuId(null); /* TODO: implement rename UI */ alert('Rename - not implemented yet'); }}
-              className="w-full text-left px-3 py-2 hover:bg-gray-800"
-            >Rename</button>
-
-            <button
-              onClick={(e) => { e.stopPropagation(); setOpenMenuId(null); /* TODO: implement share */ alert('Share - not implemented yet'); }}
-              className="w-full text-left px-3 py-2 hover:bg-gray-800"
-            >Share</button>
-
-            <button
-              onClick={async (e) => {
-                e.stopPropagation();
-                setOpenMenuId(null);
-                // confirm before delete to avoid accidental deletes
-                if (!confirm("Delete this chat permanently?")) return;
-                try {
-                  await deleteConversation(c._id);
-                } catch (err) {
-                  console.error(err);
-                  alert("Delete failed");
-                }
-              }}
-              className="w-full text-left px-3 py-2 text-red-400 hover:bg-gray-800"
-            >Delete</button>
-          </div>
-        )}
-      </div>
-    </div>
+    {/* RIGHT SIDE – DELETE BUTTON */}
+    <button
+      title="Delete chat"
+      onClick={(e) => {
+        e.stopPropagation();       // prevents opening the chat
+        deleteConversation(c._id); // call your delete function
+      }}
+      className="text-red-400 hover:text-red-300"
+    >
+      <X size={14} />
+    </button>
   </div>
 ))}
-
-
 
         </div>
 
@@ -656,19 +607,12 @@ const loadConversation = async (conv) => {
             <div className="text-gray-500 text-center mt-28">Pick a chat or start a new one.</div>
           ) : (
             <article className="max-w-3xl mx-auto space-y-4">
-             {activeChat.messages?.map((m, i) => (
-  <div key={i} className="space-y-1">
-    {m.role === "user" && (
-      <div className="text-right text-blue-400 text-sm">{m.content}</div>
-    )}
-    {m.role === "assistant" && (
-      <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap">
-        {m.content}
-      </div>
-    )}
-  </div>
-))}
-
+              {(activeChat.history || [{ user: activeChat.message, ai: activeChat.reply }]).map((turn, i) => (
+                <div key={i} className="space-y-1">
+                  <div className="text-right text-blue-400 text-sm">{turn.user}</div>
+                  <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap reply-box">{turn.ai || ""}</div>
+                </div>
+              ))}
 
               {activeChat.history && activeChat.history.length > 0 && activeChat.history[0].ai && (
   <div className="flex items-center gap-3 mt-3">
@@ -712,21 +656,13 @@ const loadConversation = async (conv) => {
             </label>
 
             <div className="flex-1 relative textarea-wrapper">
-             <textarea
-  value={message.replace(/¶INTERIM:.*$/, "")}
-  onChange={(e) => setMessage(e.target.value)}
-  onKeyDown={(e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      if (file) handleUpload();
-      else sendMessage();
-    }
-  }}
-  placeholder={task === "contract" ? "Describe the contract you want (parties, duration, rent, deposit, special clauses)..." : "Type your question or paste text here..."}
-  className="composer-textarea"
-  rows={2}
-/>
-
+              <textarea
+                value={message.replace(/¶INTERIM:.*$/, "")}
+                onChange={(e) => setMessage(e.target.value)}
+                placeholder={task === "contract" ? "Describe the contract you want (parties, duration, rent, deposit, special clauses)..." : "Type your question or paste text here..."}
+                className="composer-textarea"
+                rows={2}
+              />
 
               {/* inline mic inside textarea corner: hold to record */}
               {supportsSpeech && (
