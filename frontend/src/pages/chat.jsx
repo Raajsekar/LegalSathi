@@ -1,4 +1,4 @@
-// Chat.jsx
+// src/components/Chat.jsx
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { useAuthState } from "react-firebase-hooks/auth";
@@ -29,10 +29,11 @@ export default function Chat() {
   const [fileName, setFileName] = useState("");
   const [task, setTask] = useState("summarize");
   const [loading, setLoading] = useState(false);
-  const [chats, setChats] = useState([]);
-  const [activeChat, setActiveChat] = useState(null);
+  const [conversations, setConversations] = useState([]); // sidebar list
+  const [activeConv, setActiveConv] = useState(null); // { _id, title, last_message, messages: [...] }
   const [searchQuery, setSearchQuery] = useState("");
-  const [menuOpen, setMenuOpen] = useState(null); // for 3-dots dropdown
+  const [hoveredChatId, setHoveredChatId] = useState(null);
+  const [openMenuId, setOpenMenuId] = useState(null);
   const [showGstPanel, setShowGstPanel] = useState(false);
 
   // voice states
@@ -52,17 +53,16 @@ export default function Chat() {
 
   const scrollRef = useRef(null);
   const recognitionRef = useRef(null);
-  const interimRef = useRef(""); // store interim between events
+  const interimRef = useRef("");
 
-  // --- init: fetch chats and speech detection ---
   useEffect(() => {
-    if (user) fetchChats();
+    if (user) fetchConversations();
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRecognition) {
       setSupportsSpeech(true);
       const r = new SpeechRecognition();
-      r.continuous = false; // single shot per hold
+      r.continuous = false;
       r.interimResults = true;
       r.lang = "en-IN";
       recognitionRef.current = r;
@@ -75,22 +75,17 @@ export default function Chat() {
           if (res.isFinal) final += res[0].transcript;
           else interim += res[0].transcript;
         }
-
         interimRef.current = interim || "";
         setMessage((prevBase) => {
-          // remove any existing interim overlay
           const base = prevBase.replace(/¶INTERIM:.*$/, "");
           if (final) {
-            // final results get appended permanently
             return (base ? base + " " : "") + final;
           }
-          // show interim as marker appended (not committed)
           return base + (interim ? ` ¶INTERIM:${interim}` : "");
         });
       };
 
       r.onend = () => {
-        // finalize text: remove interim marker and ensure state updates render
         setTimeout(() => {
           setListening(false);
           setMessage((m) => m.replace(/¶INTERIM:.*$/, "").trim());
@@ -113,92 +108,115 @@ export default function Chat() {
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
       }, 80);
     }
-  }, [activeChat, chats]);
+  }, [activeConv, conversations]);
 
-  // --- API: fetch history ---
-  const fetchChats = async () => {
+  // -------- Backend interactions --------
+  const fetchConversations = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/api/history/${user.uid}`);
-      const items = res.data || [];
-      // Normalize: ensure history array and _id present
-      const normalized = items.map((it) => {
-        // prefer conv id fields from backend
-        const id = it.conv_id || it._id || it._id_str || it._id?.toString();
-        return {
-          ...it,
-          _id: id || it._id || undefined,
-          history: it.history || (it.message ? [{ user: it.message, ai: it.reply }] : []),
-        };
-      });
-      setChats(normalized);
-      if (normalized.length > 0) setActiveChat(normalized[0]);
+      const res = await axios.get(`${API_BASE}/api/conversations/${user.uid}`);
+      const convs = res.data || [];
+      setConversations(convs);
+      if (convs.length > 0) {
+        // if there's a previously selected conversation, try to keep it selected
+        if (!activeConv) {
+          loadConversation(convs[0]);
+        } else {
+          const found = convs.find((c) => c._id === activeConv._id);
+          if (found) {
+            // keep active, but update title/last_message
+            setActiveConv((prev) => ({ ...prev, ...found }));
+          } else {
+            loadConversation(convs[0]);
+          }
+        }
+      } else {
+        setActiveConv(null);
+      }
     } catch (e) {
-      console.error("Fetch error", e);
+      console.error("Fetch conversations error", e);
     }
   };
 
-  // --- Utility: save chat entry locally and keep top-most ordering ---
-  const upsertChatEntry = (entry) => {
-    setChats((prev) => {
-      // if incoming entry has _id, merge into existing
-      if (entry._id) {
-        const idx = prev.findIndex((c) => c._id === entry._id);
-        if (idx !== -1) {
-          const updated = prev.slice();
-          updated[idx] = { ...updated[idx], ...entry };
-          const moved = updated.splice(idx, 1)[0];
-          return [moved, ...updated];
-        }
+  const loadConversation = async (conv) => {
+    try {
+      // If conv already has messages loaded and it's the same id, use it
+      if (activeConv && activeConv._id === conv._id && activeConv.messages) {
+        setActiveConv(activeConv);
+        return;
       }
-      // fallback: if activeChat exists and has _id, append into it
-      return [entry, ...prev];
+      const res = await axios.get(`${API_BASE}/api/conversation/${conv._id}`);
+      const msgs = res.data || [];
+      setActiveConv({ ...conv, messages: msgs });
+    } catch (e) {
+      console.error("Load conversation error", e);
+      // still set conv as active with empty messages to allow sending (optimistic)
+      setActiveConv({ ...conv, messages: activeConv?.messages || [] });
+    }
+  };
+
+  // safe upsert for sidebar conversations and activeConv
+  const upsertConversation = (conv) => {
+    setConversations((prev) => {
+      const idx = prev.findIndex((c) => c._id === conv._id);
+      if (idx !== -1) {
+        const copy = prev.slice();
+        copy[idx] = { ...copy[idx], ...conv };
+        const moved = copy.splice(idx, 1)[0];
+        return [moved, ...copy];
+      }
+      return [conv, ...prev];
     });
   };
 
-  // --- STOP GENERATING (abort current request) ---
   const stopGenerating = () => {
     try {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
+      if (abortControllerRef.current) abortControllerRef.current.abort();
     } catch (e) {
       console.warn("Abort error", e);
     } finally {
       setLoading(false);
+      abortControllerRef.current = null;
     }
   };
 
-  // --- SEND MESSAGE with streaming fallback ---
+  // ---------- Send message (stream) ----------
   const sendMessage = async () => {
-    // remove interim overlay marker
     const cleanMessage = message.replace(/¶INTERIM:.*$/, "").trim();
     if (!cleanMessage) return alert("Please type a question or prompt.");
     setLoading(true);
-    // create a provisional local entry so UI feels responsive
-    const localId = `local-${Date.now()}`;
-    const existingConvId = activeChat && activeChat._id ? activeChat._id : null;
 
-    // optimistic entry
-    const optimisticEntry = {
-      _id: existingConvId || localId,
-      message: cleanMessage,
-      reply: activeChat?.reply || "",
-      pdf_url: activeChat?.pdf_url || null,
-      timestamp: Date.now() / 1000,
-     history: [
-  ...(activeChat?.history || []),
-  { user: cleanMessage, ai: "" }  // added only once
-]
-,
-    };
+    // determine conv id: if activeConv exists and has real _id use it, else null (backend will create)
+    const existingConvId = activeConv && activeConv._id && !String(activeConv._id).startsWith("placeholder") ? activeConv._id : null;
+    const localConvId = existingConvId || `local-${Date.now()}`;
 
-    upsertChatEntry(optimisticEntry);
-    setActiveChat(optimisticEntry);
+    // update activeConv/messages optimistically
+    const userMsg = { role: "user", content: cleanMessage, timestamp: Date.now() / 1000, _id: `m-${Date.now()}` };
+
+    if (!activeConv || (activeConv && activeConv._id !== localConvId)) {
+      // create placeholder activeConv when no active conversation
+      const placeholder = {
+        _id: localConvId,
+        title: cleanMessage.substring(0, 40) || "Conversation",
+        last_message: cleanMessage,
+        messages: [userMsg],
+      };
+      setActiveConv(placeholder);
+      upsertConversation({ _id: placeholder._id, title: placeholder.title, last_message: placeholder.last_message });
+    } else {
+      // append to existing activeConv messages
+      setActiveConv((prev) => {
+        const msgs = prev.messages ? prev.messages.concat([userMsg]) : [userMsg];
+        return { ...prev, messages: msgs, last_message: cleanMessage };
+      });
+      upsertConversation({ _id: localConvId, last_message: cleanMessage });
+    }
+
     setMessage("");
 
-    // Try streaming endpoint first (backend: /api/stream_chat)
+    // start streaming
     const controller = new AbortController();
     abortControllerRef.current = controller;
+
     const payload = {
       user_id: user.uid,
       conv_id: existingConvId || null,
@@ -206,7 +224,6 @@ export default function Chat() {
     };
 
     try {
-      // Attempt streaming fetch
       const streamRes = await fetch(`${API_BASE}/api/stream_chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -215,7 +232,6 @@ export default function Chat() {
       });
 
       if (!streamRes.ok) {
-        // fallback to non-streaming POST /api/chat
         throw new Error(`Stream unavailable: ${streamRes.status}`);
       }
 
@@ -224,78 +240,80 @@ export default function Chat() {
       let done = false;
       let accumulated = "";
 
-      // ensure UI shows we are generating
-      setLoading(true);
+      // create placeholder assistant message (empty) and keep its temp id
+      let assistantTempId = `am-${Date.now()}`;
+      // append placeholder assistant turn if not present
+      setActiveConv((prev) => {
+        const msgs = prev.messages ? prev.messages.slice() : [];
+        // if last message already userMsg we push assistant placeholder
+        msgs.push({ role: "assistant", content: "", timestamp: Date.now() / 1000, _id: assistantTempId });
+        return { ...prev, messages: msgs };
+      });
 
       while (!done) {
         const { value, done: doneReading } = await reader.read();
         done = doneReading;
         if (value) {
           const chunk = decoder.decode(value, { stream: true });
-          // server sends newline delimited JSON per your backend; handle gracefully
           const lines = chunk.split("\n").filter(Boolean);
           for (const line of lines) {
             try {
               const obj = JSON.parse(line);
               if (obj.chunk) {
                 accumulated += obj.chunk;
-                // update optimistic entry partial reply
-                setChats((prev) => {
-                  const updated = prev.slice();
-                  const idx = updated.findIndex((c) => c._id === optimisticEntry._id);
-                  if (idx === -1) return prev;
-                  updated[idx] = {
-                    ...updated[idx],
-                    reply: accumulated,
-                    history: [
-  ...(updated[idx].history || []),
-  { user: cleanMessage, ai: accumulated }
-],
 
-                  };
-                  return updated;
-                });
-                // reflect in activeChat
-                setActiveChat((prev) => {
+                // update assistant placeholder content
+                setActiveConv((prev) => {
                   if (!prev) return prev;
-                  return { ...prev, reply: accumulated, history: [...(prev.history || []).slice(0, -1), { user: cleanMessage, ai: accumulated }] };
-                });
-              } else if (obj.done) {
-                // finalization: backend may return conv_id
-                const convId = obj.conv_id || existingConvId || optimisticEntry._id;
-                // save final message to DB via fetch? The backend already saved on its side.
-                // Update ID if needed
-                setChats((prev) => {
-                  const updated = prev.slice();
-                  const idx = updated.findIndex((c) => c._id === optimisticEntry._id);
+                  const msgs = prev.messages ? prev.messages.slice() : [];
+                  const idx = msgs.findIndex((m) => m._id === assistantTempId);
                   if (idx !== -1) {
-                    updated[idx] = { ...updated[idx], _id: convId, reply: accumulated };
-                    const moved = updated.splice(idx, 1)[0];
-                    return [moved, ...updated];
+                    msgs[idx] = { ...msgs[idx], content: accumulated };
+                  } else {
+                    // fallback: push
+                    msgs.push({ role: "assistant", content: accumulated, timestamp: Date.now() / 1000, _id: assistantTempId });
                   }
-                  return prev;
+                  // also update last_message preview
+                  upsertConversation({ _id: prev._id, last_message: accumulated, title: (accumulated || prev.title).substring(0, 80) });
+                  return { ...prev, messages: msgs, last_message: accumulated };
                 });
-                setActiveChat((prev) => prev ? { ...prev, _id: convId, reply: accumulated } : prev);
+
+              } else if (obj.done) {
+                const convIdFromServer = obj.conv_id || existingConvId || localConvId;
+
+                // move/replace local conversation id with server conv id
+                // update sidebar and activeConv
+                setConversations((prev) => {
+                  // remove any local entry with localConvId or placeholder and replace
+                  const withoutLocal = prev.filter((p) => p._id !== localConvId);
+                  // insert/merge server conv
+                  const found = prev.find((p) => p._id === convIdFromServer);
+                  const newEntry = {
+                    _id: convIdFromServer,
+                    title: accumulated ? accumulated.substring(0, 80) : (found?.title || cleanMessage.substring(0, 40)),
+                    last_message: accumulated || cleanMessage,
+                    updated_at: Date.now() / 1000
+                  };
+                  return [newEntry, ...withoutLocal.filter((p) => p._id !== convIdFromServer)];
+                });
+
+                setActiveConv((prev) => {
+                  if (!prev) return prev;
+                  return { ...prev, _id: convIdFromServer, last_message: accumulated };
+                });
+
+                // break out: done handled after the loop naturally
               }
             } catch (e) {
-              // Not JSON -- try to treat as plain text chunk
-              accumulated += chunk;
-              setChats((prev) => {
-                const updated = prev.slice();
-                const idx = updated.findIndex((c) => c._id === optimisticEntry._id);
-                if (idx !== -1) {
-                  updated[idx] = { ...updated[idx], reply: accumulated, history: [
-  ...(updated[idx].history || []).map((h, index) =>
-    index === updated[idx].history.length - 1
-      ? { user: cleanMessage, ai: accumulated }
-      : h
-  )
-]
- };
-                }
-                return updated;
+              // not JSON — append raw chunk
+              accumulated += line;
+              setActiveConv((prev) => {
+                if (!prev) return prev;
+                const msgs = prev.messages ? prev.messages.slice() : [];
+                const idx = msgs.findIndex((m) => m._id === assistantTempId);
+                if (idx !== -1) msgs[idx] = { ...msgs[idx], content: accumulated };
+                return { ...prev, messages: msgs, last_message: accumulated };
               });
-              setActiveChat((prev) => prev ? { ...prev, reply: accumulated } : prev);
             }
           }
         }
@@ -304,7 +322,6 @@ export default function Chat() {
       setLoading(false);
       abortControllerRef.current = null;
     } catch (err) {
-      // If streaming failed or aborted, fallback to simple POST /api/chat (non-stream)
       if (err.name === "AbortError") {
         console.log("Stream aborted by user.");
         setLoading(false);
@@ -312,6 +329,7 @@ export default function Chat() {
         return;
       }
 
+      // fallback to non-streaming endpoint (if you have /api/chat) or local ask
       try {
         const res = await axios.post(`${API_BASE}/api/chat`, {
           user_id: user.uid,
@@ -320,24 +338,16 @@ export default function Chat() {
         });
 
         const aiReply = res.data.reply;
-        const convId = res.data.conv_id || res.data._id || existingConvId || optimisticEntry._id;
-        const pdf_url = res.data.pdf_url || res.data.pdf || null;
+        const convId = res.data.conv_id || res.data._id || existingConvId || localConvId;
+        const pdf_url = res.data.pdf_url || null;
 
-        const finalEntry = {
-          _id: convId,
-          message: cleanMessage,
-          reply: aiReply,
-          pdf_url,
-          timestamp: Date.now() / 1000,
-          history: [
-  ...(activeChat?.history || []),
-  { user: cleanMessage, ai: aiReply }
-],
+        // update active conv and sidebar
+        setActiveConv((prev) => {
+          const msgs = prev.messages ? prev.messages.concat([{ role: "assistant", content: aiReply, timestamp: Date.now() / 1000, _id: `am-${Date.now()}` }]) : [{ role: "assistant", content: aiReply, timestamp: Date.now() / 1000, _id: `am-${Date.now()}` }];
+          return { ...prev, _id: convId, last_message: aiReply, messages: msgs, pdf_url };
+        });
 
-        };
-
-        upsertChatEntry(finalEntry);
-        setActiveChat(finalEntry);
+        upsertConversation({ _id: convId, last_message: aiReply, title: (aiReply || cleanMessage).substring(0, 80) });
       } catch (e) {
         console.error("Send error (both stream & fallback):", e);
         alert("Failed to send message — try again.");
@@ -348,18 +358,18 @@ export default function Chat() {
     }
   };
 
-  // --- REGENERATE last user prompt (resend last user message) ---
-  const regenerateLast = async (chat) => {
-    if (!chat) return;
-    const lastTurn = (chat.history || []).slice(-1)[0];
-    const lastUser = lastTurn?.user || chat.message;
-    if (!lastUser) return alert("No user message to regenerate.");
-    setMessage(lastUser);
-    // small delay to allow UI update then send
+  // regenerate last user prompt
+  const regenerateLast = async (conv) => {
+    if (!conv) return;
+    const msgs = conv.messages || [];
+    const lastUser = [...msgs].reverse().find((m) => m.role === "user");
+    const text = lastUser?.content;
+    if (!text) return alert("No user message to regenerate.");
+    setMessage(text);
     setTimeout(() => sendMessage(), 120);
   };
 
-  // --- FILE UPLOAD (summarize / explain) ---
+  // upload file
   const handleUpload = async () => {
     if (!file) return alert("Please select a file first.");
     setLoading(true);
@@ -374,20 +384,16 @@ export default function Chat() {
       });
 
       const aiReply = res.data.reply;
-      const convId = res.data.conv_id || res.data._id || undefined;
-      const pdf_url = res.data.pdf_url || res.data.pdf || null;
-
+      const pdf_url = res.data.pdf_url || null;
+      // new conv entry
       const newEntry = {
-        _id: convId || `local-${Date.now()}`,
-        message: `📄 ${file.name}`,
-        reply: aiReply,
-        pdf_url,
-        timestamp: Date.now() / 1000,
-        history: [{ user: `📄 ${file.name}`, ai: aiReply }],
+        _id: `local-${Date.now()}`,
+        title: `File: ${file.name}`,
+        last_message: aiReply,
+        messages: [{ role: "assistant", content: aiReply, timestamp: Date.now() / 1000 }]
       };
-
-      upsertChatEntry(newEntry);
-      setActiveChat(newEntry);
+      upsertConversation(newEntry);
+      setActiveConv(newEntry);
       setFile(null);
       setFileName("");
     } catch (e) {
@@ -398,14 +404,12 @@ export default function Chat() {
     }
   };
 
-  // --- file input change (show filename) ---
   const onFileChange = (e) => {
     const f = e.target.files?.[0] ?? null;
     setFile(f);
     setFileName(f ? f.name : "");
   };
 
-  // copy reply
   const handleCopy = (text) => {
     copy(text || "");
     const el = document.createElement("div");
@@ -415,21 +419,17 @@ export default function Chat() {
     setTimeout(() => el.remove(), 1300);
   };
 
-  // Reset conversation: create placeholder new chat but do NOT delete backend history
   const handleResetConversation = () => {
     const placeholder = {
       _id: `placeholder-${Date.now()}`,
-      message: "",
-      reply: "",
-      timestamp: Date.now() / 1000,
-      pdf_url: null,
-      history: [{ user: "", ai: "" }],
+      title: "New conversation",
+      last_message: "",
+      messages: []
     };
-    setChats((prev) => [placeholder, ...prev]);
-    setActiveChat(placeholder);
+    setConversations((prev) => [placeholder, ...prev]);
+    setActiveConv(placeholder);
   };
 
-  // --- GST tools ---
   const calculateGst = async () => {
     if (!gstAmount) return alert("Enter an amount first.");
     try {
@@ -460,7 +460,6 @@ export default function Chat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showGstPanel]);
 
-  // --- speech handling helpers (Hold-to-record) ---
   const startHoldRecording = () => {
     if (!recognitionRef.current) return alert("Speech recognition not supported in this browser.");
     try {
@@ -477,35 +476,37 @@ export default function Chat() {
     if (!recognitionRef.current) return;
     try {
       recognitionRef.current.stop();
-      // keep listening state for a short moment so animation shows
       setTimeout(() => setListening(false), 140);
     } catch (e) {
       console.warn("Stop recording error", e);
     }
   };
 
-  // Filtered chats for Sidebar search
-  const filtered = chats.filter(
+  // Filtered conversations for Sidebar search
+  const filtered = conversations.filter(
     (c) =>
-      (c.message && c.message.toLowerCase().includes(searchQuery.toLowerCase())) ||
-      (c.reply && c.reply.toLowerCase().includes(searchQuery.toLowerCase()))
+      (c.title && c.title.toLowerCase().includes(searchQuery.toLowerCase())) ||
+      (c.last_message && c.last_message.toLowerCase().includes(searchQuery.toLowerCase()))
   );
 
+  const deleteConversation = async (id) => {
+    try {
+      await axios.delete(`${API_BASE}/api/conversation/${id}`);
+      setConversations((prev) => prev.filter((c) => c._id !== id));
+      if (activeConv?._id === id) setActiveConv(null);
+    } catch (e) {
+      console.error("Delete error", e);
+      alert("Delete failed");
+    }
+  };
 
-const deleteConversation = async (id) => {
-  try {
-    await axios.delete(`${API_BASE}/api/conversation/${id}`);
-
-    // remove locally
-    setChats((prev) => prev.filter((c) => c._id !== id));
-
-    // if current chat was deleted → clear screen
-    if (activeChat?._id === id) setActiveChat(null);
-
-  } catch (e) {
-    console.error("Delete error", e);
-  }
-};
+  // compute lastAi for control bar
+  const lastAi = (() => {
+    if (!activeConv) return "";
+    const msgs = activeConv.messages || [];
+    const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant");
+    return lastAssistant?.content?.trim() || "";
+  })();
 
   return (
     <div className="flex h-screen bg-[#0b0b0d] text-gray-100">
@@ -542,37 +543,68 @@ const deleteConversation = async (id) => {
           )}
 
           {filtered.map((c, i) => (
-  <div
-    key={c._id || i}
-    className={`p-3 rounded-lg flex items-start justify-between gap-2 cursor-pointer transition-colors text-sm ${
-      activeChat === c ? "bg-[#1b1c20]" : "bg-[#121214] hover:bg-[#18181b]"
-    }`}
-    onClick={() => setActiveChat(c)}
-  >
-    {/* LEFT SIDE – CHAT TITLE & PREVIEW */}
-    <div className="flex-1">
-      <div className="truncate font-medium">
-        {c.message || "Untitled"}
-      </div>
-      <div className="text-xs text-gray-500 mt-1 line-clamp-2">
-        {(c.reply || "").substring(0, 140)}
-      </div>
-    </div>
+            <div
+              key={c._id || i}
+              className={`p-3 rounded-lg flex items-start justify-between gap-2 cursor-pointer transition-colors text-sm ${
+                activeConv?._id === c._id ? "bg-[#1b1c20]" : "bg-[#121214] hover:bg-[#18181b]"
+              }`}
+              onMouseEnter={() => setHoveredChatId(c._id)}
+              onMouseLeave={() => { setHoveredChatId((id) => (id === c._id ? null : id)); setOpenMenuId(null); }}
+              onClick={() => loadConversation(c)}
+            >
+              <div className="flex-1">
+                <div className="truncate font-medium">
+                  {c.title || "Untitled"}
+                </div>
+                <div className="text-xs text-gray-500 mt-1 line-clamp-2">
+                  {c.last_message || ""}
+                </div>
+              </div>
 
-    {/* RIGHT SIDE – DELETE BUTTON */}
-    <button
-      title="Delete chat"
-      onClick={(e) => {
-        e.stopPropagation();       // prevents opening the chat
-        deleteConversation(c._id); // call your delete function
-      }}
-      className="text-red-400 hover:text-red-300"
-    >
-      <X size={14} />
-    </button>
-  </div>
-))}
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === c._id ? null : c._id); }}
+                    className={`px-2 py-1 rounded hover:bg-gray-800 ${hoveredChatId === c._id || openMenuId === c._id ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+                    title="Options"
+                  >
+                    <span className="inline-block w-1 h-1 rounded-full bg-gray-300 mr-0.5"></span>
+                    <span className="inline-block w-1 h-1 rounded-full bg-gray-300 mr-0.5"></span>
+                    <span className="inline-block w-1 h-1 rounded-full bg-gray-300"></span>
+                  </button>
 
+                  {openMenuId === c._id && (
+                    <div className="absolute right-0 top-full mt-1 w-40 bg-[#0f1012] border border-gray-700 rounded shadow-lg z-40 text-sm">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setOpenMenuId(null); alert('Rename - not implemented yet'); }}
+                        className="w-full text-left px-3 py-2 hover:bg-gray-800"
+                      >Rename</button>
+
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setOpenMenuId(null); alert('Share - not implemented yet'); }}
+                        className="w-full text-left px-3 py-2 hover:bg-gray-800"
+                      >Share</button>
+
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          setOpenMenuId(null);
+                          if (!confirm("Delete this chat permanently?")) return;
+                          try {
+                            await deleteConversation(c._id);
+                          } catch (err) {
+                            console.error(err);
+                            alert("Delete failed");
+                          }
+                        }}
+                        className="w-full text-left px-3 py-2 text-red-400 hover:bg-gray-800"
+                      >Delete</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
 
         <div className="p-3 border-t border-gray-800 flex items-center gap-2">
@@ -590,59 +622,62 @@ const deleteConversation = async (id) => {
         <header className="px-6 py-4 border-b border-gray-800 flex items-center justify-between bg-[#0f1012]">
           <div className="flex items-center gap-4">
             <h2 className="text-lg font-semibold">Chat</h2>
-
-           
           </div>
 
           <div className="flex items-center gap-3">
             <button onClick={() => setShowGstPanel(!showGstPanel)} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2">
               <Calculator size={14} /> GST / Tax Tools
             </button>
-            <button onClick={() => fetchChats()} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700">Refresh</button>
+            <button onClick={() => fetchConversations()} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700">Refresh</button>
           </div>
         </header>
 
         <section className="flex-1 overflow-y-auto p-6 chat-content" ref={scrollRef}>
-          {!activeChat ? (
+          {!activeConv ? (
             <div className="text-gray-500 text-center mt-28">Pick a chat or start a new one.</div>
           ) : (
             <article className="max-w-3xl mx-auto space-y-4">
-              {(activeChat.history || [{ user: activeChat.message, ai: activeChat.reply }]).map((turn, i) => (
-                <div key={i} className="space-y-1">
-                  <div className="text-right text-blue-400 text-sm">{turn.user}</div>
-                  <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap reply-box">{turn.ai || ""}</div>
+              {activeConv.messages?.map((m, i) => (
+                <div key={m._id || i} className="space-y-1">
+                  {m.role === "user" && (
+                    <div className="text-right text-blue-400 text-sm">{m.content}</div>
+                  )}
+                  {m.role === "assistant" && (
+                    <div className="bg-[#151518] p-6 rounded-lg text-gray-200 whitespace-pre-wrap reply-box">
+                      {m.content}
+                    </div>
+                  )}
                 </div>
               ))}
 
-              {activeChat.history && activeChat.history.length > 0 && activeChat.history[0].ai && (
-  <div className="flex items-center gap-3 mt-3">
-    {activeChat.pdf_url && (
-      <a
-        href={activeChat.pdf_url.startsWith("http") ? activeChat.pdf_url : `${API_BASE}${activeChat.pdf_url}`}
-        target="_blank"
-        rel="noreferrer"
-        className="text-blue-400 hover:underline flex items-center gap-2"
-      >
-        <FileText size={16} /> Download PDF
-      </a>
-    )}
+              { lastAi ? (
+                <div className="flex items-center gap-3 mt-3">
+                  {activeConv.pdf_url && (
+                    <a
+                      href={activeConv.pdf_url.startsWith("http") ? activeConv.pdf_url : `${API_BASE}${activeConv.pdf_url}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-blue-400 hover:underline flex items-center gap-2"
+                    >
+                      <FileText size={16} /> Download PDF
+                    </a>
+                  )}
 
-    <button onClick={() => handleCopy(activeChat.reply)} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2">
-      <Copy size={14} /> Copy
-    </button>
+                  <button onClick={() => handleCopy(lastAi)} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2">
+                    <Copy size={14} /> Copy
+                  </button>
 
-    <button onClick={() => regenerateLast(activeChat)} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2">
-      <RotateCw size={14} /> Regenerate
-    </button>
+                  <button onClick={() => regenerateLast(activeConv)} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2">
+                    <RotateCw size={14} /> Regenerate
+                  </button>
 
-    {loading && (
-      <button onClick={stopGenerating} className="text-sm px-3 py-1 rounded bg-[#7f1d1d] hover:bg-[#9b1f1f] border border-gray-700 flex items-center gap-2">
-        <Square size={14} /> Stop
-      </button>
-    )}
-  </div>
-)}
-
+                  {loading && (
+                    <button onClick={stopGenerating} className="text-sm px-3 py-1 rounded bg-[#7f1d1d] hover:bg-[#9b1f1f] border border-gray-700 flex items-center gap-2">
+                      <Square size={14} /> Stop
+                    </button>
+                  )}
+                </div>
+              ) : null }
             </article>
           )}
         </section>
@@ -659,12 +694,18 @@ const deleteConversation = async (id) => {
               <textarea
                 value={message.replace(/¶INTERIM:.*$/, "")}
                 onChange={(e) => setMessage(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    if (file) handleUpload();
+                    else sendMessage();
+                  }
+                }}
                 placeholder={task === "contract" ? "Describe the contract you want (parties, duration, rent, deposit, special clauses)..." : "Type your question or paste text here..."}
                 className="composer-textarea"
                 rows={2}
               />
 
-              {/* inline mic inside textarea corner: hold to record */}
               {supportsSpeech && (
                 <button
                   title={listening ? "Release to stop" : "Hold to record"}
@@ -689,7 +730,6 @@ const deleteConversation = async (id) => {
             </div>
           </div>
 
-          {/* centered disclaimer */}
           <div className="max-w-6xl mx-auto mt-3 text-xs text-gray-400 disclaimer">
             ⚠️ <strong>LegalSathi can make mistakes.</strong> Check important info and cross-verify before using for legal decisions.
           </div>
