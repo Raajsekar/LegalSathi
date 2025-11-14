@@ -245,22 +245,27 @@ export default function Chat() {
                   const idx = updated.findIndex((c) => c._id === optimisticEntry._id);
                   if (idx === -1) return prev;
                   updated[idx] = {
-                    ...updated[idx],
-                    reply: accumulated,
-                    messages: [
-  ...(updated[idx].messages || []),
-  { role: "assistant", content: accumulated }
-],
-
-
-                  };
+  ...updated[idx],
+  reply: accumulated,
+  messages: [
+    ...(updated[idx].messages || []).filter(m => m.role !== "assistant"),  // remove partial old one
+    { role: "assistant", content: accumulated }
+  ],
+};
                   return updated;
                 });
                 // reflect in activeChat
                 setActiveChat((prev) => {
-                  if (!prev) return prev;
-                  return { ...prev, reply: accumulated, history: [...(prev.history || []).slice(0, -1), { user: cleanMessage, ai: accumulated }] };
-                });
+  if (!prev) return prev;
+  return {
+    ...prev,
+    reply: accumulated,
+    messages: [
+      ...(prev.messages || []).filter(m => m.role !== "assistant"),
+      { role: "assistant", content: accumulated }
+    ]
+  };
+});
               } else if (obj.done) {
                 // finalization: backend may return conv_id
                 const convId = obj.conv_id || existingConvId || optimisticEntry._id;
@@ -270,13 +275,26 @@ export default function Chat() {
                   const updated = prev.slice();
                   const idx = updated.findIndex((c) => c._id === optimisticEntry._id);
                   if (idx !== -1) {
-                    updated[idx] = { ...updated[idx], _id: convId, reply: accumulated };
+                    updated[idx] = {
+  ...updated[idx],
+  _id: convId,
+  reply: accumulated,
+  title: updated[idx].title || cleanMessage,     // first user message = title
+  message: updated[idx].message || cleanMessage, // for sidebar compatibility
+};
+
                     const moved = updated.splice(idx, 1)[0];
                     return [moved, ...updated];
                   }
                   return prev;
                 });
-                setActiveChat((prev) => prev ? { ...prev, _id: convId, reply: accumulated } : prev);
+                setActiveChat((prev) => prev ? {
+  ...prev,
+  _id: convId,
+  reply: accumulated,
+  title: prev.title || cleanMessage,
+  message: prev.message || cleanMessage
+} : prev);
               }
             } catch (e) {
               // Not JSON -- try to treat as plain text chunk
