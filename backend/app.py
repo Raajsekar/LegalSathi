@@ -498,115 +498,78 @@ def upload_file():
         user_id = request.form.get("user_id")
         task = request.form.get("task", "summarize")
         file = request.files.get("file")
-        if not user_id or not file:
-            return jsonify({"error": "Missing user_id or file"}), 400
 
-        # Save uploaded file
+        if not user_id or not file:
+            return jsonify({"error": "Missing fields"}), 400
+
         filename = f"{uuid.uuid4().hex}_{file.filename}"
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         file.save(filepath)
 
-        # Extract text content
+        # extract text
         lower = filename.lower()
         if lower.endswith(".pdf"):
             content = extract_pdf_text(filepath)
         elif lower.endswith(".docx"):
             content = extract_docx_text(filepath)
         elif lower.endswith(".txt"):
-            with open(filepath, "r", encoding="utf-8", errors="ignore") as fh:
-                content = fh.read()
+            content = open(filepath, "r", encoding="utf8", errors="ignore").read()
         else:
             return jsonify({"error": "Unsupported file type"}), 400
 
-        # ✅ Detect file topic — GST / tax / financial vs generic
-        text_preview = content[:2000].lower()
-        if any(word in text_preview for word in [
-            "gst", "goods and services tax", "cgst", "sgst", "igst", "input tax credit",
-            "invoice", "turnover", "taxable value", "itc", "tax saving", "income tax", "tds"
-        ]):
-            # GST or tax-related content
-            context = (
-                "You are LegalSathi, a professional Indian GST and tax assistant. "
-                "Analyze and summarize the uploaded GST or tax-related document. "
-                "Identify key figures such as taxable value, GST rate, CGST/SGST/IGST components, "
-                "and any compliance-related details (invoice number, date, supplier, buyer). "
-                "Provide a lawful summary including potential ITC eligibility, filing notes, "
-                "and common tax-saving insights — but clearly state this is for informational use only, "
-                "not professional advice."
-            )
-        elif "agreement" in text_preview or "contract" in text_preview or "legal" in text_preview:
-            # Legal document
-            context = (
-                "Summarize this legal document, highlighting important clauses, parties involved, "
-                "rights, obligations, termination terms, and governing law. "
-                "Explain in simple Indian legal English and mention key takeaways."
-            )
-        elif "research" in text_preview or "study" in text_preview or "paper" in text_preview:
-            # Academic or article type
-            context = (
-                "Summarize this research or article logically. Highlight main ideas, results, "
-                "methodology, and conclusions in clear simple points."
-            )
-        else:
-            # Default — your original summarization logic
-            if task == "summarize":
-                context = (
-                    "Summarize the uploaded document in clear, concise language. "
-                    "Highlight key ideas, structure, important facts, and insights. "
-                    "If it's a legal or business document, mention important terms or clauses, "
-                    "but if it's any other type (research, article, notes, etc.), summarize naturally "
-                    "without legal assumptions."
-                )
-            else:
-                context = (
-                    "Explain this document in simple terms, outlining the key points, sections, "
-                    "and practical meaning for an average reader. Keep it factual and easy to read."
-                )
+        # AI summary
+        context = "Summarize clearly."
+        reply = ask_ai(context, content[:8000])
 
-        # ✅ Process content (trim for safety)
-        content_trim = content[:8000]
-        reply = ask_ai(context, content_trim)
+        # pdf generate
+        pdfname = f"{uuid.uuid4().hex[:8]}.pdf"
+        text_to_pdf(reply, pdfname)
 
-        # ✅ Generate a downloadable PDF of AI reply
-        filename_pdf = f"{uuid.uuid4().hex[:8]}.pdf"
-        pdf_path = text_to_pdf(reply, filename_pdf)
+        # -------------------------------
+        # CREATE NEW CONVERSATION HERE
+        # -------------------------------
+        conv = {
+            "user_id": user_id,
+            "title": file.filename,
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "last_message": reply
+        }
+        conv_res = db.get_collection("conversations").insert_one(conv)
+        conv_id = conv_res.inserted_id
 
-        # ✅ Save chat record for user
-        try:
-            if chats is not None:
-                chats.insert_one({
-                    "user_id": user_id,
-                    "file_name": file.filename,
-                    "reply": reply,
-                    "pdf": filename_pdf,
-                    "timestamp": time.time(),
-                })
-        except Exception as e:
-            print("Mongo save error:", e)
+        # save messages
+        db.get_collection("messages").insert_one({
+            "conv_id": conv_id,
+            "role": "user",
+            "content": f"📄 {file.filename}",
+            "timestamp": time.time()
+        })
+        db.get_collection("messages").insert_one({
+            "conv_id": conv_id,
+            "role": "assistant",
+            "content": reply,
+            "timestamp": time.time()
+        })
 
-        # ✅ Save file record for Library (unchanged)
-        try:
-            db.get_collection("file_records").insert_one({
-                "user_id": user_id,
-                "original_name": file.filename,
-                "stored_path": filepath,
-                "pdf": filename_pdf,
-                "timestamp": time.time()
-            })
-        except Exception as e:
-            print("file_records insert error:", e)
+        # save file record
+        db.get_collection("file_records").insert_one({
+            "user_id": user_id,
+            "original_name": file.filename,
+            "stored_path": filepath,
+            "pdf": pdfname,
+            "timestamp": time.time()
+        })
 
-        # ✅ Return AI reply and metadata
         return jsonify({
             "reply": reply,
-            "pdf_url": f"/download/{filename_pdf}",
-            "file_name": file.filename
+            "pdf_url": f"/download/{pdfname}",
+            "conv_id": str(conv_id)
         })
 
     except Exception as e:
-        print("API /api/upload error:", e)
-        traceback.print_exc()
-        return jsonify({"error": "Internal server error"}), 500
+        print("upload error:", e)
+        return jsonify({"error": "internal error"}), 500
 
 
 @app.route("/download/<filename>")
