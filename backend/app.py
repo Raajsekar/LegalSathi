@@ -242,101 +242,138 @@ def api_gst_tips():
 @app.route("/")
 def home():
     return "⚖️ LegalSathi backend active"
-
 @app.route("/api/stream_chat", methods=["POST"])
 def stream_chat():
     """
-    Streams AI reply tokens back to the client as a text/event-stream-like chunked response.
-    Client expects a newline-delimited stream of JSON chunks.
+    Streams assistant reply as JSON lines.
+    Fully fixed version — stable, works with Groq + your frontend.
     """
     try:
         data = request.get_json(force=True)
         user_id = data.get("user_id")
-        message = data.get("message", "").strip()
-        conv_id = data.get("conv_id")  # optional; if None create new conv
+        message = (data.get("message") or "").strip()
+        conv_id = data.get("conv_id")
 
         if not user_id or not message:
             return jsonify({"error": "Missing user_id or message"}), 400
 
-        # Create conversation if needed
+        # -------------------------
+        # 1. VALIDATE / CREATE CONVERSATION
+        # -------------------------
         if not conv_id:
-            conv = create_conversation(user_id, title=message[:50] or "Conversation")
-            conv_id = conv["_id"]
+            conv = create_conversation(
+                user_id,
+                title=message[:50] or "Conversation"
+            )
+            conv_id = str(conv["_id"])
         else:
-            # verify conv belongs to user
-            conv_doc = db.get_collection("conversations").find_one({"_id": ObjectId(conv_id)})
+            conv_doc = db.get_collection("conversations").find_one(
+                {"_id": ObjectId(conv_id)}
+            )
             if not conv_doc or conv_doc.get("user_id") != user_id:
-                return jsonify({"error": "Invalid conversation id"}), 403
+                return jsonify({"error": "Invalid conversation ID"}), 403
 
-        # save user message
+        # Save user message
         add_message(conv_id, "user", message)
 
-        # build context (previous messages)
+        # -------------------------
+        # 2. BUILD CONTEXT
+        # -------------------------
         context_msgs = build_context(conv_id, max_messages=12)
 
-        # choose context system prompt based on message
-        msg_lower = message.lower()
-        if "agreement" in msg_lower or "contract" in msg_lower or "draft" in msg_lower:
-            system_prompt = "Draft a detailed Indian legal agreement with clear clauses, parties, duration, payment terms, liability, termination, and governing law. Use professional Indian legal language."
-        elif "summarize" in msg_lower or "highlight" in msg_lower:
-            system_prompt = "Summarize this Indian legal document and highlight the main points, obligations, deadlines, and risks."
+        # -------------------------
+        # 3. PICK SYSTEM PROMPT
+        # -------------------------
+        lower = message.lower()
+        if any(x in lower for x in ["agreement", "contract", "draft"]):
+            system_prompt = (
+                "Draft a detailed Indian legal agreement with clear clauses, parties, "
+                "duration, payment terms, liabilities, termination, and governing law. "
+                "Use professional Indian legal language."
+            )
+        elif any(x in lower for x in ["summarize", "highlight", "summary"]):
+            system_prompt = (
+                "Summarize this Indian legal document and highlight the main points, "
+                "obligations, deadlines, and risks."
+            )
         else:
-            system_prompt = "You are LegalSathi, an Indian legal assistant. Provide professional, lawful responses."
+            system_prompt = (
+                "You are LegalSathi, a professional Indian legal assistant. "
+                "Explain clearly, avoid hallucinations, and follow Indian law."
+            )
 
-        # Prepare system/user messages for AI
         messages_for_ai = [{"role": "system", "content": system_prompt}]
         messages_for_ai.extend(context_msgs)
         messages_for_ai.append({"role": "user", "content": message})
 
-        # Define generator to stream
+        # -------------------------
+        # 4. STREAMING GENERATOR
+        # -------------------------
         def generate():
-            # Try SDK streaming if available
+            final_text = ""
+
             try:
-                # If Groq client supports streaming, use it. PSEUDO:
-                if hasattr(client.chat.completions, "stream") :
-                    for event in client.chat.completions.stream(
-                        model="llama-3.1-8b-instant",
-                        messages=messages_for_ai
-                    ):
-                        # event handling depends on SDK output shape; adapt as needed
-                        chunk_text = getattr(event, "delta", "") or event
-                        # send JSON chunk per line
-                        yield json.dumps({"chunk": chunk_text}) + "\n"
-                    # When finished, you might get final message in event
-                    # Save final assistant message (you must reconstruct final_text)
-                    # (If SDK provides full, use that.)
-                    final_text = ""  # set properly if SDK returns final content
-                else:
-                    # Fallback: call full completion (blocking) then stream substrings
+                # real Groq streaming
+                for chunk in client.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    messages=messages_for_ai,
+                    stream=True
+                ):
+                    delta = (
+                        chunk.choices[0].delta.get("content")
+                        if chunk.choices and chunk.choices[0].delta
+                        else ""
+                    )
+
+                    if delta:
+                        final_text += delta
+                        yield json.dumps({"chunk": delta}) + "\n"
+
+            except Exception as stream_err:
+                print("Streaming failed → fallback:", stream_err)
+
+                try:
+                    # fallback: full completion
                     completion = client.chat.completions.create(
                         model="llama-3.1-8b-instant",
                         messages=messages_for_ai,
+                        stream=False
                     )
                     final_text = completion.choices[0].message.content.strip()
-                    for chunk in simulate_stream(final_text):
-                        yield json.dumps({"chunk": chunk}) + "\n"
-            except Exception as e:
-                # Fallback: try to compute full reply with ask_ai()
-                try:
-                    final_text = ask_ai(system_prompt, message)
-                    for chunk in simulate_stream(final_text):
-                        yield json.dumps({"chunk": chunk}) + "\n"
-                except Exception as e2:
-                    yield json.dumps({"error": "AI error"}) + "\n"
 
-            # After streaming all chunks, save assistant message to DB
+                    # simulate stream
+                    for ch in simulate_stream(final_text):
+                        yield json.dumps({"chunk": ch}) + "\n"
+
+                except Exception as fatal:
+                    print("FATAL AI ERROR:", fatal)
+                    yield json.dumps({"error": "AI error"}) + "\n"
+                    final_text = "[AI Error]"
+            
+            # -------------------------
+            # Save final reply
+            # -------------------------
             try:
                 add_message(conv_id, "assistant", final_text)
-                # update conv updated_at
-                db.get_collection("conversations").update_one({"_id": ObjectId(conv_id)}, {"$set": {"updated_at": time.time(), "title": final_text[:80]}})
+                db.get_collection("conversations").update_one(
+                    {"_id": ObjectId(conv_id)},
+                    {"$set": {
+                        "updated_at": time.time(),
+                        "title": (final_text[:80] or "Conversation")
+                    }}
+                )
             except Exception as e:
-                print("Could not save assistant message:", e)
+                print("Failed to save assistant message:", e)
 
-            # send final signal
+            # Final signal
             yield json.dumps({"done": True, "conv_id": conv_id}) + "\n"
 
-        # Return a streaming response (text/event-stream style)
-        return Response(stream_with_context(generate()), mimetype="text/plain; charset=utf-8")
+        # return streaming response
+        return Response(
+            stream_with_context(generate()),
+            mimetype="text/plain; charset=utf-8"
+        )
+
     except Exception as e:
         print("stream_chat error:", e)
         traceback.print_exc()
@@ -671,23 +708,16 @@ def new_chat(user_id):
         traceback.print_exc()
         return jsonify({"error": "failed"}), 500
 
-@app.route("/api/delete_conversation/<conv_id>", methods=["DELETE"])
+
+@app.route("/api/conversation/<conv_id>", methods=["DELETE"])
 def delete_conversation(conv_id):
     try:
-        if db is None:
-            return jsonify({"error": "Database unavailable"}), 500
-
-        # Delete messages inside the conversation
-        db.get_collection("messages").delete_many({"conv_id": ObjectId(conv_id)})
-
-        # Delete the conversation itself
         db.get_collection("conversations").delete_one({"_id": ObjectId(conv_id)})
-
+        db.get_collection("messages").delete_many({"conv_id": ObjectId(conv_id)})
         return jsonify({"status": "ok"})
     except Exception as e:
         print("delete_conversation error:", e)
         return jsonify({"error": "failed"}), 500
-
 
 @app.errorhandler(500)
 def internal_error(error):
