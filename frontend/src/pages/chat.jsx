@@ -172,7 +172,11 @@ export default function Chat() {
     setLoading(true);
     // create a provisional local entry so UI feels responsive
     const localId = `local-${Date.now()}`;
-    const existingConvId = activeChat && activeChat._id ? activeChat._id : null;
+    const existingConvId =
+  activeChat && activeChat._id && !String(activeChat._id).startsWith("local-")
+    ? activeChat._id
+    : null;
+
 
     // optimistic entry
     const optimisticEntry = {
@@ -236,40 +240,50 @@ title: activeChat?.title || cleanMessage,
             try {
               const obj = JSON.parse(line);
               if (obj.chunk) {
-  accumulated += obj.chunk;
+  // assistant produced more text
+accumulated += obj.chunk;
 
-  // update chats array immutably: attach/replace assistant partial message
-  // PARTIAL chunk: append or replace last assistant draft (do NOT remove older assistant messages)
-setChats((prev) =>
-  prev.map((c) => {
+// update chats array immutably: keep previous user messages and
+// keep one growing assistant message at the end (replace last assistant)
+setChats((prev) => {
+  return prev.map((c) => {
     if (c._id !== optimisticEntry._id) return c;
 
-    const msgs = c.messages ? [...c.messages] : [];
+    const prevMsgs = c.messages || [];
 
-    // If last message is assistant, replace its content (draft); else push a new assistant draft
-    if (msgs.length && msgs[msgs.length - 1].role === "assistant") {
-      msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], content: accumulated };
-    } else {
-      msgs.push({ role: "assistant", content: accumulated });
-    }
+    // remove the last assistant partial (if any) so we can append updated assistant text
+    const withoutLastAssistant = prevMsgs.slice().filter((m, idx, arr) => {
+      // leave only non-assistant messages, but keep assistant messages except the last one
+      // We will append the current assistant partial at the end.
+      return m.role !== "assistant";
+    });
 
-    return { ...c, reply: accumulated, messages: msgs, last_message: accumulated };
-  })
-);
+    const newMsgs = withoutLastAssistant.concat({ role: "assistant", content: accumulated });
 
-// Update activeChat similarly
+    return {
+      ...c,
+      reply: accumulated,
+      messages: newMsgs,
+      last_message: accumulated,
+    };
+  });
+});
+
+// update activeChat similarly (if it is the one we are streaming into)
 setActiveChat((prev) => {
-  if (!prev || prev._id !== optimisticEntry._id) return prev;
+  if (!prev) return prev;
+  if (prev._id !== optimisticEntry._id) return prev;
 
-  const msgs = prev.messages ? [...prev.messages] : [];
+  const prevMsgs = prev.messages || [];
+  const withoutLastAssistant = prevMsgs.slice().filter((m) => m.role !== "assistant");
+  const newMsgs = withoutLastAssistant.concat({ role: "assistant", content: accumulated });
 
-  if (msgs.length && msgs[msgs.length - 1].role === "assistant") {
-    msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], content: accumulated };
-  } else {
-    msgs.push({ role: "assistant", content: accumulated });
-  }
-
-  return { ...prev, reply: accumulated, messages: msgs, last_message: accumulated };
+  return {
+    ...prev,
+    reply: accumulated,
+    messages: newMsgs,
+    last_message: accumulated,
+  };
 });
 
 }
@@ -277,62 +291,58 @@ setActiveChat((prev) => {
 else if (obj.done) {
   const convId = obj.conv_id || existingConvId || optimisticEntry._id;
 
-// update chats: set final assistant message, preserve history, move to top
-setChats((prev) => {
-  const mapped = prev.map((c) => {
-    if (c._id !== optimisticEntry._id) return c;
+  // update chats: replace local id, set title only if not present,
+  // set last_message and ensure messages array has final assistant message
+  setChats((prev) => {
+    const mapped = prev.map((c) => {
+      if (c._id !== optimisticEntry._id) return c;
 
-    const msgs = c.messages ? [...c.messages] : [];
+      // keep existing title if present (important for file uploads)
+      const keepTitle = c.title || (c.messages && c.messages[0] && c.messages[0].role === "user" ? c.messages[0].content : null);
 
-    // replace last assistant draft or append final assistant message
-    if (msgs.length && msgs[msgs.length - 1].role === "assistant") {
-      msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], content: accumulated };
-    } else {
-      msgs.push({ role: "assistant", content: accumulated });
+      // final assistant message
+      const finalMsgs = (c.messages || []).filter((m) => m.role !== "assistant").concat({ role: "assistant", content: accumulated });
+
+      return {
+        ...c,
+        _id: convId,
+        reply: accumulated,
+        title: keepTitle,
+        last_message: accumulated,
+        messages: finalMsgs,
+      };
+    });
+
+    // move updated conv to front (so sidebar shows this on top)
+    const idx = mapped.findIndex((c) => c._id === convId);
+    if (idx > -1) {
+      const copy = mapped.slice();
+      const moved = copy.splice(idx, 1)[0];
+      return [moved, ...copy];
     }
-
-    return {
-      ...c,
-      _id: convId,
-      messages: msgs,
-      last_message: accumulated,
-      title: c.title || cleanMessage
-    };
+    return mapped;
   });
 
-  // move updated chat to front
-  const idx = mapped.findIndex((c) => c._id === convId);
-  if (idx > -1) {
-    const copy = mapped.slice();
-    const moved = copy.splice(idx, 1)[0];
-    return [moved, ...copy];
-  }
-  return mapped;
-});
+  // update activeChat (also handle local->server id swap)
+  setActiveChat((prev) => {
+    if (!prev) return prev;
+    if (prev._id !== optimisticEntry._id && prev._id !== convId) return prev;
 
-// update activeChat (handle local->convId swap)
-setActiveChat((prev) => {
-  if (!prev) return prev;
-  if (prev._id !== optimisticEntry._id && prev._id !== convId) return prev;
+    const keepTitle = prev.title || (prev.messages && prev.messages[0] && prev.messages[0].role === "user" ? prev.messages[0].content : null);
 
-  const msgs = prev.messages ? [...prev.messages] : [];
-  if (msgs.length && msgs[msgs.length - 1].role === "assistant") {
-    msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], content: accumulated };
-  } else {
-    msgs.push({ role: "assistant", content: accumulated });
-  }
+    const finalMsgs = (prev.messages || []).filter((m) => m.role !== "assistant").concat({ role: "assistant", content: accumulated });
 
-  return {
-    ...prev,
-    _id: convId,
-    messages: msgs,
-    reply: accumulated,
-    last_message: accumulated,
-    title: prev.title || cleanMessage
-  };
-});
-;
+    return {
+      ...prev,
+      _id: convId,
+      reply: accumulated,
+      title: keepTitle,
+      last_message: accumulated,
+      messages: finalMsgs,
+    };
+  });
 }
+
 
             } 
             catch (e) {
@@ -443,40 +453,37 @@ title: activeChat?.title || cleanMessage,
       headers: { "Content-Type": "multipart/form-data" },
     });
 
-    const aiReply = res.data.reply;
-    const convId = res.data.conv_id || res.data._id || activeChat?._id || `local-${Date.now()}`;
+    const aiReply = res.data.reply || "";
+    
+    // ✅ ALWAYS use a NEW conversation for file uploads
+    // REMOVE → const convId = res.data.conv_id || res.data._id || activeChat?._id || `local-${Date.now()}`;
+    // ADD →
+    const convId = res.data.conv_id || res.data._id || `local-${Date.now()}`;
+
     const pdf_url = res.data.pdf_url || null;
 
+    // ❗ FILE UPLOAD SHOULD NOT APPEND INTO ACTIVE CHAT
+    // REMOVE → uses activeChat?.messages
+    // ADD → fresh messages array
     const updatedMessages = [
-      ...(activeChat?.messages || []),
       { role: "user", content: `📄 ${file.name}` },
       { role: "assistant", content: aiReply },
     ];
 
+    // 🚀 Chat entry with TITLE = file name
     const finalEntry = {
       _id: convId,
-      title: activeChat?.title || `📄 ${file.name}`,
+      title: file.name,           // <-- ALWAYS use filename as title
       last_message: aiReply,
       pdf_url,
       messages: updatedMessages,
       timestamp: Date.now() / 1000,
     };
 
-    // update chat list
-    setChats((prev) => {
-      const idx = prev.findIndex((c) => c._id === convId);
-      let arr = [...prev];
+    // Insert at top of chats list
+    setChats((prev) => [finalEntry, ...prev]);
 
-      if (idx !== -1) {
-        arr[idx] = { ...arr[idx], ...finalEntry };
-        const moved = arr.splice(idx, 1)[0];
-        return [moved, ...arr];
-      } else {
-        return [finalEntry, ...prev];
-      }
-    });
-
-    // update active chat
+    // Set active chat to the new one
     setActiveChat(finalEntry);
 
     setFile(null);
@@ -488,6 +495,7 @@ title: activeChat?.title || cleanMessage,
     setLoading(false);
   }
 };
+
 
 
   // --- file input change (show filename) ---
@@ -509,12 +517,21 @@ title: activeChat?.title || cleanMessage,
 
   // Reset conversation: create placeholder new chat but do NOT delete backend history
   const handleResetConversation = () => {
+  // Create a fresh local-only conversation object that has no _id.
+  // This ensures sendMessage treats it as a new conversation.
   setActiveChat({
     _id: null,
     messages: [],
-    title: "New Chat"
+    title: null,
+    last_message: null,
   });
+
+  // clear composer and file too
+  setMessage("");
+  setFile(null);
+  setFileName("");
 };
+
 
 
 
@@ -581,6 +598,15 @@ title: activeChat?.title || cleanMessage,
   );
 const deleteConversation = async (id) => {
   if (!id) return;
+
+  // If this is a local optimistic chat (not saved to DB yet),
+  // just remove from UI without calling backend.
+  if (String(id).startsWith("local-")) {
+    setChats((prev) => prev.filter((c) => c._id !== id));
+    if (activeChat?._id === id) setActiveChat(null);
+    return;
+  }
+
   try {
     await axios.delete(`${API_BASE}/api/conversation/${id}`);
     // remove locally
