@@ -120,16 +120,24 @@ export default function Chat() {
     const res = await axios.get(`${API_BASE}/api/conversations/${user.uid}`);
     const items = res.data || [];
 
-    // DO NOT NORMALIZE ANYTHING
-    setChats(items);
+    // unify model: ensure every chat has title, last_message, messages
+    const normalized = items.map((c) => ({
+      _id: c._id,
+      title: c.title || "Untitled",
+      last_message: c.last_message || "",
+      messages: [], // will be filled when chat opened
+    }));
 
-    if (!activeChat && items.length > 0) {
-      setActiveChat(items[0]);
+    setChats(normalized);
+
+    if (!activeChat && normalized.length > 0) {
+      loadConversation(normalized[0]);
     }
   } catch (e) {
-    console.error("Fetch conversations error", e);
+    console.error("fetchChats error", e);
   }
 };
+
 
 
 
@@ -176,17 +184,17 @@ export default function Chat() {
 
     // optimistic entry
     const optimisticEntry = {
-      _id: existingConvId || localId,
-      reply: activeChat?.reply || "",
-      pdf_url: activeChat?.pdf_url || null,
-      timestamp: Date.now() / 1000,
-     messages: [
-  ...(activeChat?.messages || []),
-  { role: "user", content: cleanMessage }
-]
+  _id: existingConvId || localId,
+  title: activeChat?.title || cleanMessage,
+  last_message: cleanMessage,
+  messages: [
+  ...(c.messages || []).filter(m => m.role !== "assistant"),
+  { role: "assistant", content: accumulated }
+],
+last_message: accumulated,
 
-,
-    };
+};
+
 
     upsertChatEntry(optimisticEntry);
     setActiveChat(optimisticEntry);
@@ -283,6 +291,7 @@ else if (obj.done) {
         reply: accumulated,
         title: c.title || cleanMessage,
 last_message: accumulated,
+
 
         messages: (c.messages || []).filter((m) => m.role !== "assistant").concat({ role: "assistant", content: accumulated }),
       };
@@ -543,14 +552,29 @@ const deleteConversation = async (id) => {
 const loadConversation = async (conv) => {
   try {
     const res = await axios.get(`${API_BASE}/api/conversation/${conv._id}`);
-    setActiveChat({
+
+    const msgs = res.data.map((m) => ({
+      role: m.role,
+      content: m.content
+    }));
+
+    const updated = {
       ...conv,
-      messages: res.data
-    });
+      messages: msgs,
+      last_message: msgs.length ? msgs[msgs.length - 1].content : ""
+    };
+
+    setActiveChat(updated);
+
+    // update in sidebar
+    setChats((prev) =>
+      prev.map((c) => (c._id === conv._id ? updated : c))
+    );
   } catch (e) {
-    console.error("Load conversation error", e);
+    console.error("loadConversation error", e);
   }
 };
+
 
 
   return (
@@ -602,7 +626,10 @@ const loadConversation = async (conv) => {
 
       </div>
       <div className="text-xs text-gray-500 mt-1 line-clamp-2">
-        {c.last_message || ""}
+        {<div className="text-xs text-gray-500 mt-1 line-clamp-2">
+  {c.last_message}
+</div>
+}
 
       </div>
     </div>
