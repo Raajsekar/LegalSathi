@@ -138,40 +138,36 @@ def trim_messages(messages, max_chars=8000):
 # --- AI helper ---
 def ask_ai(context, user_input):
     """
-    Safe wrapper — trims long prompts to prevent Groq 413 errors.
+    Sends prompt to Groq model and returns clean text.
+    FIXED: prevents 'minimum number of items is 1' error.
     """
     if client is None:
-        print("AI client not configured.")
-        return "⚠️ AI not configured. Please contact the admin."
+        return "⚠️ AI not configured."
+
+    # Prevent empty input
+    if not user_input or not user_input.strip():
+        return "⚠️ No valid input provided."
+
+    # Prevent empty context
+    context_text = context.strip() if context else "You are LegalSathi, an Indian legal assistant."
+
+    messages = [
+        {"role": "system", "content": context_text},
+        {"role": "user", "content": user_input.strip()}
+    ]
 
     try:
-
-        # Build messages list instead of one giant prompt
-        # protect against empty input
-        if not user_input.strip():
-            return "⚠️ No input provided."
-
-        messages = [
-    {"role": "system", "content": context or "You are LegalSathi, an Indian legal assistant."},
-    {"role": "user", "content": user_input.strip()}
-]
-
-
-        # 🔥 Trim context to avoid Groq 413 error
-        messages = trim_messages(messages, max_chars=7000)
-
-        # Call Groq normally
         completion = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=messages
         )
-
         return completion.choices[0].message.content.strip()
 
     except Exception as e:
-        print("Groq Error:", e)
+        print("\nGroq Error:", e)
         traceback.print_exc()
         return "⚠️ Sorry, the AI faced an error. Please try again."
+
 
 # --- File Text Extractors ---
 def extract_pdf_text(filepath):
@@ -306,18 +302,29 @@ def stream_chat():
         # -------------------------
         # -------------------------
 
+        # -------------------------
+# 1. VALIDATE / CREATE CONVERSATION
+# -------------------------
+
+        conv_doc = None  # <--- FIX: Define first
+
         if not conv_id or not is_valid_objectid(conv_id):
-    # Frontend sent placeholder... create a real conversation
-            conv = create_conversation(
-                user_id,
-                title=message[:50] or "Conversation")
-            conv_id = str(conv["_id"])
+         
+    # Create new conversation
+         conv = create_conversation(
+         user_id,
+         title=message[:50] or "Conversation"
+    )
+         conv_id = str(conv["_id"])
+
         else:
-            conv_doc = db.get_collection("conversations").find_one(
+         conv_doc = db.get_collection("conversations").find_one(
         {"_id": ObjectId(conv_id)}
     )
         if not conv_doc or conv_doc.get("user_id") != user_id:
-            return jsonify({"error": "Invalid conversation ID"}), 403
+              
+              return jsonify({"error": "Invalid conversation ID"}), 403
+
 
         
         
