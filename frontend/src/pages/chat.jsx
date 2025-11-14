@@ -238,65 +238,78 @@ export default function Chat() {
             try {
               const obj = JSON.parse(line);
               if (obj.chunk) {
-                accumulated += obj.chunk;
-                // update optimistic entry partial reply
-                setChats((prev) => {
-                  const updated = prev.slice();
-                  const idx = updated.findIndex((c) => c._id === optimisticEntry._id);
-                  if (idx === -1) return prev;
-                  updated[idx] = {
-  ...updated[idx],
-  reply: accumulated,
-  messages: [
-    ...(updated[idx].messages || []).filter(m => m.role !== "assistant"),  // remove partial old one
-    { role: "assistant", content: accumulated }
-  ],
-};
-                  return updated;
-                });
-                // reflect in activeChat
-                setActiveChat((prev) => {
-  if (!prev) return prev;
-  return {
-    ...prev,
-    reply: accumulated,
-    messages: [
-      ...(prev.messages || []).filter(m => m.role !== "assistant"),
-      { role: "assistant", content: accumulated }
-    ]
-  };
-});
-              } else if (obj.done) {
-                // finalization: backend may return conv_id
-                const convId = obj.conv_id || existingConvId || optimisticEntry._id;
-                // save final message to DB via fetch? The backend already saved on its side.
-                // Update ID if needed
-                setChats((prev) => {
-                  const updated = prev.slice();
-                  const idx = updated.findIndex((c) => c._id === optimisticEntry._id);
-                  if (idx !== -1) {
-                    updated[idx] = {
-  ...updated[idx],
-  _id: convId,
-  reply: accumulated,
-  title: updated[idx].title || cleanMessage,     // first user message = title
-  message: updated[idx].message || cleanMessage, // for sidebar compatibility
-};
+  accumulated += obj.chunk;
 
-                    const moved = updated.splice(idx, 1)[0];
-                    return [moved, ...updated];
-                  }
-                  return prev;
-                });
-                setActiveChat((prev) => prev ? {
-  ...prev,
-  _id: convId,
-  reply: accumulated,
-  title: prev.title || cleanMessage,
-  message: prev.message || cleanMessage
-} : prev);
-              }
-            } catch (e) {
+  // update chats array immutably: attach/replace assistant partial message
+  setChats((prev) => {
+    return prev.map((c) => {
+      if (c._id !== optimisticEntry._id) return c;
+      const msgs = (c.messages || []).filter((m) => m.role !== "assistant");
+      return {
+        ...c,
+        reply: accumulated,
+        messages: [...msgs, { role: "assistant", content: accumulated }],
+      };
+    });
+  });
+
+  // update activeChat if it matches the optimistic entry id
+  setActiveChat((prev) => {
+    if (!prev) return prev;
+    if (prev._id !== optimisticEntry._id) return prev;
+    const msgs = (prev.messages || []).filter((m) => m.role !== "assistant");
+    return {
+      ...prev,
+      reply: accumulated,
+      messages: [...msgs, { role: "assistant", content: accumulated }],
+    };
+  });
+}
+ 
+else if (obj.done) {
+  const convId = obj.conv_id || existingConvId || optimisticEntry._id;
+  // update chats: replace local id, set title if missing, and move the updated chat to top
+  setChats((prev) => {
+    // 1) map over and update matching local entry
+    const mapped = prev.map((c) => {
+      if (c._id !== optimisticEntry._id) return c;
+      return {
+        ...c,
+        _id: convId,
+        reply: accumulated,
+        title: c.title || cleanMessage,
+        message: c.message || cleanMessage,
+        messages: (c.messages || []).filter((m) => m.role !== "assistant").concat({ role: "assistant", content: accumulated }),
+      };
+    });
+
+    // 2) if id was changed (local -> convId) make sure final item is at front
+    const idx = mapped.findIndex((c) => c._id === convId);
+    if (idx > -1) {
+      const copy = mapped.slice();
+      const moved = copy.splice(idx, 1)[0];
+      return [moved, ...copy];
+    }
+    return mapped;
+  });
+
+  // update activeChat if it matches (handle local->convId swap)
+  setActiveChat((prev) => {
+    if (!prev) return prev;
+    if (prev._id !== optimisticEntry._id && prev._id !== convId) return prev;
+    return {
+      ...prev,
+      _id: convId,
+      reply: accumulated,
+      title: prev.title || cleanMessage,
+      message: prev.message || cleanMessage,
+      messages: (prev.messages || []).filter((m) => m.role !== "assistant").concat({ role: "assistant", content: accumulated }),
+    };
+  });
+}
+
+            } 
+            catch (e) {
               // Not JSON -- try to treat as plain text chunk
               accumulated += chunk;
               setChats((prev) => {
@@ -569,9 +582,8 @@ const loadConversation = async (conv) => {
           {filtered.map((c, i) => (
   <div
     key={c._id || i}
-    className={`p-3 rounded-lg flex items-start justify-between gap-2 cursor-pointer transition-colors text-sm ${
-      activeChat === c ? "bg-[#1b1c20]" : "bg-[#121214] hover:bg-[#18181b]"
-    }`}
+    className={`... ${ activeChat?._id === c._id ? "bg-[#1b1c20]" : "bg-[#121214] hover:bg-[#18181b]" }`}
+
     onClick={() => loadConversation(c)}
 
   >
