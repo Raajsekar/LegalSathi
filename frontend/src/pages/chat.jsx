@@ -184,10 +184,11 @@ export default function Chat() {
       reply: activeChat?.reply || "",
       pdf_url: activeChat?.pdf_url || null,
       timestamp: Date.now() / 1000,
-     history: [
-  ...(activeChat?.history || []),
-  { user: cleanMessage, ai: "" }  // added only once
+     messages: [
+  ...(activeChat?.messages || []),
+  { role: "user", content: cleanMessage }
 ]
+
 ,
     };
 
@@ -246,10 +247,11 @@ export default function Chat() {
                   updated[idx] = {
                     ...updated[idx],
                     reply: accumulated,
-                    history: [
-  ...(updated[idx].history || []),
-  { user: cleanMessage, ai: accumulated }
+                    messages: [
+  ...(updated[idx].messages || []),
+  { role: "assistant", content: accumulated }
 ],
+
 
                   };
                   return updated;
@@ -417,11 +419,12 @@ export default function Chat() {
   // Reset conversation: create placeholder new chat but do NOT delete backend history
   const handleResetConversation = () => {
   setActiveChat({
-    _id: null,          // new conversation will be created automatically
+    _id: null,
     messages: [],
     title: "New Chat"
   });
 };
+
 
 
   // --- GST tools ---
@@ -487,7 +490,6 @@ export default function Chat() {
   );
 const deleteConversation = async (id) => {
   if (!id) return;
-  if (!confirm("Delete this chat permanently?")) return;
   try {
     await axios.delete(`${API_BASE}/api/conversation/${id}`);
     // remove locally
@@ -558,10 +560,12 @@ const loadConversation = async (conv) => {
     {/* LEFT SIDE – CHAT TITLE & PREVIEW */}
     <div className="flex-1">
       <div className="truncate font-medium">
-        {c.message || "Untitled"}
+        {c.title || "Untitled"}
+
       </div>
       <div className="text-xs text-gray-500 mt-1 line-clamp-2">
-        {(c.reply || "").substring(0, 140)}
+        {c.last_message || ""}
+
       </div>
     </div>
 
@@ -629,10 +633,10 @@ const loadConversation = async (conv) => {
     </div>
   ))}
 
-              {activeChat.history && activeChat.history.length > 0 && activeChat.history[0].ai && (
+              {activeChat.messages && activeChat.messages.length > 0 && (
   <div className="flex items-center gap-3 mt-3">
     {activeChat.pdf_url && (
-      <a
+      <a 
         href={activeChat.pdf_url.startsWith("http") ? activeChat.pdf_url : `${API_BASE}${activeChat.pdf_url}`}
         target="_blank"
         rel="noreferrer"
@@ -642,21 +646,31 @@ const loadConversation = async (conv) => {
       </a>
     )}
 
-    <button onClick={() => handleCopy(activeChat.reply)} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2">
+    <button 
+      onClick={() => handleCopy(activeChat.messages.slice(-1)[0]?.content || "")} 
+      className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2"
+    >
       <Copy size={14} /> Copy
     </button>
 
-    <button onClick={() => regenerateLast(activeChat)} className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2">
+    <button 
+      onClick={() => regenerateLast(activeChat)} 
+      className="text-sm px-3 py-1 rounded bg-[#121214] border border-gray-700 flex items-center gap-2"
+    >
       <RotateCw size={14} /> Regenerate
     </button>
 
     {loading && (
-      <button onClick={stopGenerating} className="text-sm px-3 py-1 rounded bg-[#7f1d1d] hover:bg-[#9b1f1f] border border-gray-700 flex items-center gap-2">
+      <button 
+        onClick={stopGenerating} 
+        className="text-sm px-3 py-1 rounded bg-[#7f1d1d] hover:bg-[#9b1f1f] border border-gray-700 flex items-center gap-2"
+      >
         <Square size={14} /> Stop
       </button>
     )}
   </div>
 )}
+
 
             </article>
           )}
