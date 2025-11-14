@@ -430,42 +430,65 @@ title: activeChat?.title || cleanMessage,
 
   // --- FILE UPLOAD (summarize / explain) ---
   const handleUpload = async () => {
-    if (!file) return alert("Please select a file first.");
-    setLoading(true);
-    const fd = new FormData();
-    fd.append("user_id", user.uid);
-    fd.append("task", task);
-    fd.append("file", file);
+  if (!file) return alert("Please select a file first.");
+  setLoading(true);
 
-    try {
-      const res = await axios.post(`${API_BASE}/api/upload`, fd, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+  const fd = new FormData();
+  fd.append("user_id", user.uid);
+  fd.append("task", task);
+  fd.append("file", file);
 
-      const aiReply = res.data.reply;
-      const convId = res.data.conv_id || res.data._id || undefined;
-      const pdf_url = res.data.pdf_url || res.data.pdf || null;
+  try {
+    const res = await axios.post(`${API_BASE}/api/upload`, fd, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
 
-      const newEntry = {
-        _id: convId || `local-${Date.now()}`,
-        message: `📄 ${file.name}`,
-        reply: aiReply,
-        pdf_url,
-        timestamp: Date.now() / 1000,
-        history: [{ user: `📄 ${file.name}`, ai: aiReply }],
-      };
+    const aiReply = res.data.reply;
+    const convId = res.data.conv_id || res.data._id || activeChat?._id || `local-${Date.now()}`;
+    const pdf_url = res.data.pdf_url || null;
 
-      upsertChatEntry(newEntry);
-      setActiveChat(newEntry);
-      setFile(null);
-      setFileName("");
-    } catch (e) {
-      console.error("Upload error", e);
-      alert("Upload failed — ensure PDF/DOCX/TXT and try again.");
-    } finally {
-      setLoading(false);
-    }
-  };
+    const updatedMessages = [
+      ...(activeChat?.messages || []),
+      { role: "user", content: `📄 ${file.name}` },
+      { role: "assistant", content: aiReply },
+    ];
+
+    const finalEntry = {
+      _id: convId,
+      title: activeChat?.title || `📄 ${file.name}`,
+      last_message: aiReply,
+      pdf_url,
+      messages: updatedMessages,
+      timestamp: Date.now() / 1000,
+    };
+
+    // update chat list
+    setChats((prev) => {
+      const idx = prev.findIndex((c) => c._id === convId);
+      let arr = [...prev];
+
+      if (idx !== -1) {
+        arr[idx] = { ...arr[idx], ...finalEntry };
+        const moved = arr.splice(idx, 1)[0];
+        return [moved, ...arr];
+      } else {
+        return [finalEntry, ...prev];
+      }
+    });
+
+    // update active chat
+    setActiveChat(finalEntry);
+
+    setFile(null);
+    setFileName("");
+  } catch (e) {
+    console.error("Upload error", e);
+    alert("Upload failed — ensure PDF/DOCX/TXT and try again.");
+  } finally {
+    setLoading(false);
+  }
+};
+
 
   // --- file input change (show filename) ---
   const onFileChange = (e) => {
