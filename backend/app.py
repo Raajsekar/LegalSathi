@@ -20,6 +20,15 @@ import fitz  # pymupdf
 import docx
 from pymongo import MongoClient
 
+from bson.errors import InvalidId
+
+def is_valid_objectid(value: str):
+    try:
+        ObjectId(value)
+        return True
+    except Exception:
+        return False
+
 # Load environment
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
@@ -136,12 +145,17 @@ def ask_ai(context, user_input):
         return "⚠️ AI not configured. Please contact the admin."
 
     try:
+
         # Build messages list instead of one giant prompt
+        # protect against empty input
+        if not user_input.strip():
+            return "⚠️ No input provided."
+
         messages = [
-            {"role": "system", "content": context or 
-                "You are LegalSathi, an Indian legal AI assistant."},
-            {"role": "user", "content": user_input}
-        ]
+    {"role": "system", "content": context or "You are LegalSathi, an Indian legal assistant."},
+    {"role": "user", "content": user_input.strip()}
+]
+
 
         # 🔥 Trim context to avoid Groq 413 error
         messages = trim_messages(messages, max_chars=7000)
@@ -290,18 +304,24 @@ def stream_chat():
         # -------------------------
         # 1. VALIDATE / CREATE CONVERSATION
         # -------------------------
-        if not conv_id:
+        # -------------------------
+
+        if not conv_id or not is_valid_objectid(conv_id):
+    # Frontend sent placeholder... create a real conversation
             conv = create_conversation(
                 user_id,
-                title=message[:50] or "Conversation"
-            )
+                title=message[:50] or "Conversation")
             conv_id = str(conv["_id"])
         else:
             conv_doc = db.get_collection("conversations").find_one(
-                {"_id": ObjectId(conv_id)}
-            )
-            if not conv_doc or conv_doc.get("user_id") != user_id:
-                return jsonify({"error": "Invalid conversation ID"}), 403
+        {"_id": ObjectId(conv_id)}
+    )
+        if not conv_doc or conv_doc.get("user_id") != user_id:
+            return jsonify({"error": "Invalid conversation ID"}), 403
+
+        
+        
+        
 
         # Save user message
         add_message(conv_id, "user", message)
