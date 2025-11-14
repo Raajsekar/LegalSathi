@@ -240,12 +240,15 @@ export default function Chat() {
   setChats((prev) => {
     return prev.map((c) => {
       if (c._id !== optimisticEntry._id) return c;
-      const msgs = (c.messages || []).filter((m) => m.role !== "assistant");
       return {
-        ...c,
-        reply: accumulated,
-        messages: [...msgs, { role: "assistant", content: accumulated }],
-      };
+  ...c,
+  reply: accumulated,
+  messages: [
+    ...(c.messages || []),
+    { role: "assistant", content: accumulated }
+  ],
+};
+
     });
   });
 
@@ -253,12 +256,15 @@ export default function Chat() {
   setActiveChat((prev) => {
     if (!prev) return prev;
     if (prev._id !== optimisticEntry._id) return prev;
-    const msgs = (prev.messages || []).filter((m) => m.role !== "assistant");
     return {
-      ...prev,
-      reply: accumulated,
-      messages: [...msgs, { role: "assistant", content: accumulated }],
-    };
+  ...prev,
+  reply: accumulated,
+  messages: [
+    ...(prev.messages || []),
+    { role: "assistant", content: accumulated }
+  ],
+};
+
   });
 }
  
