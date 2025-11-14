@@ -180,7 +180,6 @@ export default function Chat() {
     // optimistic entry
     const optimisticEntry = {
       _id: existingConvId || localId,
-      message: cleanMessage,
       reply: activeChat?.reply || "",
       pdf_url: activeChat?.pdf_url || null,
       timestamp: Date.now() / 1000,
@@ -316,14 +315,15 @@ else if (obj.done) {
                 const updated = prev.slice();
                 const idx = updated.findIndex((c) => c._id === optimisticEntry._id);
                 if (idx !== -1) {
-                  updated[idx] = { ...updated[idx], reply: accumulated, history: [
-  ...(updated[idx].history || []).map((h, index) =>
-    index === updated[idx].history.length - 1
-      ? { user: cleanMessage, ai: accumulated }
-      : h
-  )
-]
- };
+                  updated[idx] = {
+  ...updated[idx],
+  last_message: accumulated,
+  messages: [
+    ...(c.messages || []).filter(m => m.role !== "assistant"),
+    { role: "assistant", content: accumulated }
+  ]
+};
+
                 }
                 return updated;
               });
