@@ -58,7 +58,7 @@ if MONGODB_URI:
         mongo = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
         mongo.admin.command("ping")
         db = mongo.get_database("legalsathi")
-        
+        chats = db.get_collection("chats")
     except Exception as e:
         print("MongoDB connection warning:", e)
         mongo = db = chats = None
@@ -138,36 +138,40 @@ def trim_messages(messages, max_chars=8000):
 # --- AI helper ---
 def ask_ai(context, user_input):
     """
-    Sends prompt to Groq model and returns clean text.
-    FIXED: prevents 'minimum number of items is 1' error.
+    Safe wrapper — trims long prompts to prevent Groq 413 errors.
     """
     if client is None:
-        return "⚠️ AI not configured."
-
-    # Prevent empty input
-    if not user_input or not user_input.strip():
-        return "⚠️ No valid input provided."
-
-    # Prevent empty context
-    context_text = context.strip() if context else "You are LegalSathi, an Indian legal assistant."
-
-    messages = [
-        {"role": "system", "content": context_text},
-        {"role": "user", "content": user_input.strip()}
-    ]
+        print("AI client not configured.")
+        return "⚠️ AI not configured. Please contact the admin."
 
     try:
+
+        # Build messages list instead of one giant prompt
+        # protect against empty input
+        if not user_input.strip():
+            return "⚠️ No input provided."
+
+        messages = [
+    {"role": "system", "content": context or "You are LegalSathi, an Indian legal assistant."},
+    {"role": "user", "content": user_input.strip()}
+]
+
+
+        # 🔥 Trim context to avoid Groq 413 error
+        messages = trim_messages(messages, max_chars=7000)
+
+        # Call Groq normally
         completion = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=messages
         )
+
         return completion.choices[0].message.content.strip()
 
     except Exception as e:
-        print("\nGroq Error:", e)
+        print("Groq Error:", e)
         traceback.print_exc()
         return "⚠️ Sorry, the AI faced an error. Please try again."
-
 
 # --- File Text Extractors ---
 def extract_pdf_text(filepath):
@@ -316,7 +320,6 @@ def stream_chat():
          title=message[:50] or "Conversation"
     )
          conv_id = str(conv["_id"])
-         conv_doc = conv
 
         else:
          conv_doc = db.get_collection("conversations").find_one(
@@ -721,6 +724,19 @@ def download(filename):
     return "File not found", 404
 
 
+@app.route("/api/history/<user_id>")
+def history(user_id):
+    try:
+        if chats is None:
+            return jsonify([])
+        docs = list(chats.find({"user_id": user_id}).sort("timestamp", -1))
+        for d in docs:
+            d["_id"] = str(d["_id"])
+        return jsonify(docs)
+    except Exception as e:
+        print("API /api/history error:", e)
+        traceback.print_exc()
+        return jsonify([])
     
 @app.route("/api/library/<user_id>")
 def library(user_id):
@@ -738,6 +754,24 @@ def library(user_id):
         print("API /api/library error:", e)
         traceback.print_exc()
         return jsonify([])
+
+@app.route("/api/newchat/<user_id>", methods=["POST"])
+def new_chat(user_id):
+    """Create a new empty chat thread."""
+    try:
+        if chats is not None:
+            chats.insert_one({
+                "user_id": user_id,
+                "message": "",
+                "reply": "",
+                "pdf": None,
+                "timestamp": time.time(),
+            })
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        print("API /api/newchat error:", e)
+        traceback.print_exc()
+        return jsonify({"error": "failed"}), 500
 
 
 @app.route("/api/conversation/<conv_id>", methods=["DELETE"])
