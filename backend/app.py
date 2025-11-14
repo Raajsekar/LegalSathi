@@ -299,6 +299,7 @@ def api_gst_tips():
 @app.route("/")
 def home():
     return "⚖️ LegalSathi backend active"
+
 @app.route("/api/stream_chat", methods=["POST"])
 def stream_chat():
     """
@@ -387,21 +388,23 @@ def stream_chat():
             final_text = ""
 
             try:
+
                 # real Groq streaming
                 for chunk in client.chat.completions.create(
                     model="llama-3.1-8b-instant",
                     messages=messages_for_ai,
                     stream=True
-                ):
-                    delta = (
-                        chunk.choices[0].delta.get("content")
-                        if chunk.choices and chunk.choices[0].delta
-                        else ""
-                    )
-
-                    if delta:
+):
+                    if (
+                        chunk
+                        and chunk.choices
+                        and hasattr(chunk.choices[0].delta, "content")
+                        and chunk.choices[0].delta.content
+    ):
+                        delta = chunk.choices[0].delta.content
                         final_text += delta
                         yield json.dumps({"chunk": delta}) + "\n"
+
 
             except Exception as stream_err:
                 print("Streaming failed → fallback:", stream_err)
