@@ -32,7 +32,6 @@ export default function Chat() {
   const [chats, setChats] = useState([]);
   const [activeChat, setActiveChat] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
-  
   const [showGstPanel, setShowGstPanel] = useState(false);
 
   // voice states
@@ -490,20 +489,23 @@ export default function Chat() {
       (c.message && c.message.toLowerCase().includes(searchQuery.toLowerCase())) ||
       (c.reply && c.reply.toLowerCase().includes(searchQuery.toLowerCase()))
   );
-
-
 const deleteConversation = async (id) => {
-  try {
-    await axios.delete(`${API_BASE}/api/conversation/${id}`);
+  if (!id) return;
 
-    // remove locally
+  const ok = confirm("Delete this chat permanently?");
+  if (!ok) return;
+
+  try {
+    await axios.delete(`${API_BASE}/api/delete_conversation/${id}`);
+
+    // Remove from sidebar
     setChats((prev) => prev.filter((c) => c._id !== id));
 
-    // if current chat was deleted → clear screen
-    if (activeChat?._id === id) setActiveChat(null);
-
-  } catch (e) {
-    console.error("Delete error", e);
+    // If active chat is deleted, pick next available
+    setActiveChat((prev) => (prev?._id === id ? null : prev));
+  } catch (err) {
+    console.error("Delete failed", err);
+    alert("Failed to delete chat. Try again.");
   }
 };
 
