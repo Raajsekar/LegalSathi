@@ -8,5 +8,4 @@ pymupdf
 python-docx
 gunicorn
 numpy==1.26.4
-sentence-transformers
-faiss-cpu
+

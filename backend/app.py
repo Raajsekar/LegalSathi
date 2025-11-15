@@ -17,6 +17,9 @@ from legal_engine import (
     generate_contract, generate_tax_reply, generate_docx_stream,
     clause_review, precedent_search, make_jurisdiction_note
 )
+# add after other imports
+from embedding_utils import retrieve as retrieve_relevant_chunks, index_document, reindex_all_files
+
 DOCX_TEMP = {}
 # AI SDK import (Groq)
 try:

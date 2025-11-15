@@ -1,309 +1,298 @@
 # embedding_utils.py
+"""
+Groq-only embedding utilities for LegalSathi.
+
+Features:
+- Chunk plain text into overlapping chunks.
+- Generate embeddings via Groq (requires GROQ_API_KEY env var).
+- Store chunk metadata and normalized embeddings in MongoDB collection "embeddings".
+- Retrieve top-k relevant chunks by computing cosine similarity in Python (no faiss/torch).
+- Lightweight: no numpy, no sentence-transformers, no faiss.
+
+Usage:
+- index_document(db, conv_id, file_record_id, filename, text, user_id, index_name="global")
+- retrieve(db, query, top_k=6, index_name="global")
+- reindex_all_files(db, index_name="global")  # optional helper
+"""
+
 import os
-import time
-import uuid
-import json
 import math
-import pickle
-from typing import List, Dict, Optional
+import uuid
+import time
+from typing import List, Dict
 
-# Try to import faiss — user must install faiss-cpu or faiss-gpu
-try:
-    import faiss
-except Exception as e:
-    faiss = None
-    print("Warning: faiss import failed. Install faiss-cpu (pip) to enable vector index. Error:", e)
-
-# Try Groq client if present
-GROQ_CLIENT = None
+# Groq client (lightweight)
 try:
     from groq import Groq
-    GROQ_CLIENT = Groq(api_key=os.getenv("GROQ_API_KEY", ""))
-    print("Groq client available for embeddings (if EMBED_WITH_GROQ env enabled).")
 except Exception:
-    GROQ_CLIENT = None
+    Groq = None
 
-# Sentence-transformers fallback
-_sentence_model = None
-_dim = None
-USE_SENTENCE_TRANSFORMERS = True
-try:
-    from sentence_transformers import SentenceTransformer
-except Exception:
-    SentenceTransformer = None
-    USE_SENTENCE_TRANSFORMERS = False
-    print("SentenceTransformer not available; install 'sentence-transformers' for local embedding fallback.")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "") or os.getenv("GROQ_API_KEY", "")
+if Groq is not None and GROQ_API_KEY:
+    groq_client = Groq(api_key=GROQ_API_KEY)
+else:
+    groq_client = None
 
-# Configs / defaults
-EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
-INDEX_DIR = os.getenv("FAISS_INDEX_DIR", "uploads/faiss")
-os.makedirs(INDEX_DIR, exist_ok=True)
-
-# Chunk sizes tuned for LONG documents
-DEFAULT_CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 2000))   # characters
-DEFAULT_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 300))
-
-# choose whether to use Groq embeddings (env var)
-EMBED_WITH_GROQ = os.getenv("EMBED_WITH_GROQ", "false").lower() in ("1", "true", "yes")
-
-def get_sentence_model():
-    global _sentence_model, _dim
-    if _sentence_model is None:
-        if SentenceTransformer is None:
-            raise RuntimeError("sentence-transformers not installed")
-        _sentence_model = SentenceTransformer(EMBED_MODEL_NAME)
-        _dim = _sentence_model.get_sentence_embedding_dimension()
-    return _sentence_model, _dim
-
-def _index_path(name: str):
-    return os.path.join(INDEX_DIR, f"faiss_{name}.index")
-
-def create_faiss_index(name="global", dim=384):
-    if faiss is None:
-        raise RuntimeError("faiss not installed. pip install faiss-cpu")
-    idx = faiss.IndexIDMap(faiss.IndexFlatIP(dim))  # store ids explicitly
-    return idx
-
-def save_index(index, name="global"):
-    if faiss is None:
-        raise RuntimeError("faiss not installed")
-    path = _index_path(name)
-    faiss.write_index(index, path)
-
-def load_index(name="global", dim=384):
-    path = _index_path(name)
-    if faiss is None:
-        raise RuntimeError("faiss not installed")
-    if os.path.exists(path):
-        try:
-            idx = faiss.read_index(path)
-            return idx
-        except Exception as e:
-            print("faiss read_index failed, creating new index:", e)
-    # new index
-    return create_faiss_index(name, dim=dim)
-
-# --------- chunking ---------
-import re
-def chunk_text(text: str, chunk_size: int = DEFAULT_CHUNK_SIZE, overlap: int = DEFAULT_OVERLAP) -> List[str]:
-    # naive paragraph + window approach
-    parts = re.split(r'\n{2,}|\r\n{2,}', text)
+# Simple text chunker
+def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
+    if not text:
+        return []
+    text = text.replace("\r\n", "\n")
     chunks = []
-    buf = ""
-    for p in parts:
-        p = p.strip()
-        if not p:
-            continue
-        if len(buf) + len(p) + 2 <= chunk_size:
-            buf = buf + "\n\n" + p if buf else p
+    start = 0
+    length = len(text)
+    while start < length:
+        end = start + chunk_size
+        chunk = text[start:end]
+        chunks.append(chunk.strip())
+        start = end - overlap
+        if start < 0:
+            start = 0
+    return [c for c in chunks if c]
+
+# Normalization helpers (pure python)
+def l2_norm(vec: List[float]) -> float:
+    s = 0.0
+    for v in vec:
+        s += v * v
+    return math.sqrt(s) if s > 0 else 1.0
+
+def normalize(vec: List[float]) -> List[float]:
+    norm = l2_norm(vec)
+    if norm == 0:
+        return vec
+    return [v / norm for v in vec]
+
+def dot(a: List[float], b: List[float]) -> float:
+    total = 0.0
+    ln = min(len(a), len(b))
+    for i in range(ln):
+        total += a[i] * b[i]
+    return total
+
+# Groq embedding call
+def embed_text_groq(text: str) -> List[float]:
+    """
+    Returns embedding (list of floats) for given text using Groq.
+    Raises RuntimeError if groq_client is not configured.
+    """
+    if groq_client is None:
+        raise RuntimeError("Groq client not configured. Set GROQ_API_KEY and install groq package.")
+
+    # Use a compact prompt for embedding if API requires it; the Groq python SDK typically
+    # exposes an embeddings API. If your Groq SDK has a different method, adapt here.
+    # We'll try common shapes: client.embeddings.create or client.embeddings.embed
+    try:
+        # Try common API shape
+        if hasattr(groq_client, "embeddings") and hasattr(groq_client.embeddings, "create"):
+            res = groq_client.embeddings.create(model="embed-english-v1", input=text)
+            emb = res.data[0].embedding if hasattr(res.data[0], "embedding") else res.data[0]
+            return list(emb)
+        elif hasattr(groq_client, "embeddings") and hasattr(groq_client.embeddings, "embed"):
+            res = groq_client.embeddings.embed(model="embed-english-v1", input=text)
+            return list(res)
+        elif hasattr(groq_client, "embed"):
+            # fallback
+            return list(groq_client.embed(text))
         else:
-            if buf:
-                chunks.append(buf)
-            # break long paragraph
-            temp = p
-            while len(temp) > chunk_size:
-                chunks.append(temp[:chunk_size])
-                temp = temp[chunk_size - overlap:]
-            buf = temp
-    if buf:
-        chunks.append(buf)
-    return chunks
-
-# --------- embeddings helpers ---------
-def _embed_with_groq(texts: List[str]) -> List[List[float]]:
-    """
-    Try to use GROQ embeddings. API depends on Groq client library.
-    We attempt best-effort: call client.embeddings.create if exists.
-    If it fails fallback to sentence-transformers.
-    """
-    if GROQ_CLIENT is None:
-        raise RuntimeError("Groq client not available")
-    try:
-        # Best-effort call (Groq SDKs differ). We attempt the common shape:
-        resp = GROQ_CLIENT.embeddings.create(model=os.getenv("GROQ_EMBED_MODEL", "embed-1"), input=texts)
-        # resp shape might differ — try to extract embeddings
-        if hasattr(resp, "data"):
-            emb = [item.embedding for item in resp.data]
-            return emb
-        # fallback if dict
-        if isinstance(resp, dict) and "data" in resp:
-            return [d.get("embedding") for d in resp["data"]]
-        # last resort: assume resp is list of vectors
-        return list(resp)
+            # generic chat completions fallback (unlikely)
+            raise RuntimeError("Groq client doesn't expose recognized embeddings API. Check SDK version.")
     except Exception as e:
-        print("Groq embedding failed:", e)
-        raise
+        # bubble up with context
+        raise RuntimeError(f"Groq embedding error: {e}")
 
-def _embed_with_sentence_transformers(texts: List[str]):
-    model, dim = get_sentence_model()
-    vecs = model.encode(texts, show_progress_bar=False, convert_to_numpy=True, normalize_embeddings=True)
-    return vecs.astype('float32'), dim
-
-def embed_texts(texts: List[str]):
+# Index a single document text into DB (chunks + embeddings)
+def index_document(db, conv_id, file_record_id, filename, text, user_id, index_name="global", chunk_size=1000, overlap=200):
     """
-    Return (vectors (numpy array or list), dim)
+    Splits text into chunks, computes embeddings with Groq, stores into 'embeddings' collection.
+    Each document stored:
+      {
+        "_id": "<uuid>",
+        "index": index_name,
+        "conv_id": ObjectId or string,
+        "file_record_id": ObjectId or string,
+        "filename": filename,
+        "user_id": user_id,
+        "chunk_text": "...",
+        "chunk_index": 0,
+        "embedding": [...],      # normalized embedding list
+        "created_at": timestamp
+      }
     """
-    # If user explicitly requested Groq and client available, try that first
-    if EMBED_WITH_GROQ and GROQ_CLIENT is not None:
-        try:
-            emb = _embed_with_groq(texts)
-            # convert to numpy float32 array if possible
-            import numpy as np
-            arr = np.array(emb, dtype='float32')
-            # normalize for cosine via inner product search
-            norms = np.linalg.norm(arr, axis=1, keepdims=True)
-            norms[norms == 0] = 1.0
-            arr = arr / norms
-            return arr, arr.shape[1]
-        except Exception as e:
-            print("Groq embeddings failed, falling back to sentence-transformers:", e)
-
-    # fallback local
-    if not USE_SENTENCE_TRANSFORMERS:
-        raise RuntimeError("No embedding backend available (Groq disabled/unavailable and sentence-transformers not installed).")
-    vecs, dim = _embed_with_sentence_transformers(texts)
-    return vecs, dim
-
-# --------- indexing & retrieval ---------
-def index_document(db, conv_id, file_record_id, filename, text, user_id, index_name="global"):
-    """
-    Splits text into chunks, creates embeddings, stores metadata in Mongo 'embeddings' collection,
-    and adds vectors to FAISS index (persisted per index_name).
-    Returns list of embedded chunk meta.
-    """
-    import numpy as np
-    chunks = chunk_text(text)
+    # chunk
+    chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
     if not chunks:
-        return []
+        return {"status": "empty", "count": 0}
 
-    vecs, dim = embed_texts(chunks)
+    coll = db.get_collection("embeddings")
 
-    # load or create faiss index (IDMap)
-    if faiss is None:
-        raise RuntimeError("faiss is required for indexing. Install faiss-cpu.")
-    index = load_index(index_name, dim=dim)
+    inserted = 0
+    for i, c in enumerate(chunks):
+        # generate embedding
+        try:
+            emb = embed_text_groq(c)
+            emb_norm = normalize(emb)
+        except Exception as e:
+            # if embedding fails, skip this chunk but log
+            print("embed_text_groq error:", e)
+            continue
 
-    # ensure index has correct dimension
-    try:
-        if index.is_trained:
-            pass
-    except Exception:
-        # ignore
-
-        pass
-
-    embeddings_col = db.get_collection("embeddings")
-
-    # assign unique ids (use Mongo ObjectId int mapping or incremental)
-    # We'll use an integer id generated from time+uuid hash to avoid collisions
-    metas = []
-    add_vecs = []
-    add_ids = []
-    for chunk in chunks:
-        # generate int id
-        int_id = int(uuid.uuid4().int >> 64) & ((1 << 63) - 1)
-        add_ids.append(int_id)
-        add_vecs.append(vecs[len(add_ids)-1])
-
-        meta = {
-            "index_name": index_name,
-            "faiss_id": int_id,
-            "conv_id": conv_id if isinstance(conv_id, (str,)) else str(conv_id),
-            "file_record_id": str(file_record_id),
+        doc = {
+            "_id": str(uuid.uuid4()),
+            "index": index_name,
+            "conv_id": conv_id,
+            "file_record_id": file_record_id,
             "filename": filename,
-            "chunk_text": chunk,
             "user_id": user_id,
-            "timestamp": time.time()
+            "chunk_text": c,
+            "chunk_index": i,
+            "embedding": emb_norm,
+            "created_at": time.time()
         }
-        embeddings_col.insert_one(meta)
-        metas.append(meta)
 
-    # add vectors to index with ids
-    arr = np.vstack(add_vecs).astype('float32')
-    index.add_with_ids(arr, np.array(add_ids, dtype='int64'))
-    save_index(index, index_name)
-    return metas
+        try:
+            coll.insert_one(doc)
+            inserted += 1
+        except Exception as e:
+            print("Failed to insert embedding doc:", e)
 
-def retrieve(db, query: str, top_k: int = 5, index_name: str = "global"):
+    return {"status": "ok", "count": inserted}
+
+# Retrieve top-k relevant chunks for query
+def retrieve(db, query: str, top_k: int = 6, index_name: str = "global"):
     """
-    Return top_k hits as list of dicts with keys:
-      score, faiss_id, chunk_text, filename, conv_id, file_record_id, timestamp
+    1) Embed the query with Groq
+    2) Fetch candidate chunks from DB (same index_name)
+    3) Compute cosine similarity (dot of normalized vectors)
+    4) Return top_k hits sorted by score
+
+    WARNING: This implementation fetches all rows for the index and computes similarity in Python.
+    If your embeddings collection grows very large, add pre-filtering (by user_id, conv_id, or use MongoDB Atlas Vector Search).
     """
-    import numpy as np
-    if faiss is None:
-        print("faiss not installed — retrieval disabled.")
+    if not query or not query.strip():
         return []
 
-    qvecs, dim = embed_texts([query])
-    q = qvecs[0].astype('float32').reshape(1, -1)
+    coll = db.get_collection("embeddings")
 
-    index = load_index(index_name, dim=dim)
-    if index.ntotal == 0:
+    # compute query embedding
+    try:
+        q_emb = embed_text_groq(query)
+        q_emb_norm = normalize(q_emb)
+    except Exception as e:
+        print("retrieve embed error:", e)
         return []
 
-    D, I = index.search(q, top_k)
-    D = D.tolist()
-    I = I.tolist()
+    # fetch candidates - a simple strategy: recent N per index
+    try:
+        # fetch reasonable limit (e.g., 2000 most recent). Adjust as needed.
+        cursor = coll.find({"index": index_name}).sort("created_at", -1).limit(2000)
+        candidates = list(cursor)
+    except Exception as e:
+        print("DB fetch error in retrieve:", e)
+        candidates = []
+
     hits = []
-    for score, fid in zip(D[0], I[0]):
-        if int(fid) < 0:
+    for c in candidates:
+        emb = c.get("embedding")
+        if not emb:
             continue
-        meta = db.get_collection("embeddings").find_one({"faiss_id": int(fid), "index_name": index_name})
-        if not meta:
-            continue
-        hits.append({
+        try:
+            score = dot(q_emb_norm, emb)  # dot of normalized vectors = cosine similarity
+        except Exception:
+            # mismatched length - compute min-length dot
+            score = dot(q_emb_norm, emb)
+        hits.append((score, c))
+
+    # sort descending by score
+    hits.sort(key=lambda x: x[0], reverse=True)
+
+    # return top_k mapped to user-friendly dicts
+    out = []
+    for score, c in hits[:top_k]:
+        out.append({
             "score": float(score),
-            "faiss_id": int(fid),
-            "chunk_text": meta.get("chunk_text"),
-            "filename": meta.get("filename"),
-            "conv_id": meta.get("conv_id"),
-            "file_record_id": meta.get("file_record_id"),
-            "timestamp": meta.get("timestamp")
+            "chunk_text": c.get("chunk_text", ""),
+            "filename": c.get("filename"),
+            "file_record_id": str(c.get("file_record_id", "")),
+            "conv_id": str(c.get("conv_id", "")),
+            "chunk_index": c.get("chunk_index", 0),
         })
-    return hits
+
+    return out
+
+# Optional: remove index entries for a file or reindex
+def delete_index_for_file(db, file_record_id, index_name="global"):
+    coll = db.get_collection("embeddings")
+    try:
+        res = coll.delete_many({"file_record_id": file_record_id, "index": index_name})
+        return {"deleted_count": res.deleted_count}
+    except Exception as e:
+        print("delete_index_for_file error:", e)
+        return {"error": str(e)}
 
 def reindex_all_files(db, index_name="global"):
     """
-    Recreate index from scratch using file_records collection.
-    WARNING: This removes existing embeddings documents for the index_name.
+    Helper utility to reindex all file_records collection entries.
+    This expects 'file_records' collection to have:
+      { "_id": ObjectId, "stored_path": "/path/to/file", "original_name": "...", "conv_id": ObjectId, "user_id": "..." }
+    Use with caution on large datasets (rate-limit).
     """
-    if faiss is None:
-        raise RuntimeError("faiss not installed")
+    try:
+        files = list(db.get_collection("file_records").find({}))
+    except Exception as e:
+        print("reindex_all_files fetch error:", e)
+        return {"status": "failed", "error": str(e)}
 
-    # clear embeddings collection entries for index
-    db.get_collection("embeddings").delete_many({"index_name": index_name})
-    # create fresh index with dimension guessed from model
-    # create a temp model to get dim
-    if EMBED_WITH_GROQ and GROQ_CLIENT is not None:
-        # we don't know dim — create index with 1536 (common) and let faiss accept
-        dim = int(os.getenv("FALLBACK_EMBED_DIM", 1536))
-    else:
-        model, dim = get_sentence_model()
-
-    index = create_faiss_index(name=index_name, dim=dim)
-
-    files = list(db.get_collection("file_records").find({}))
+    results = {"indexed": 0, "skipped": 0, "errors": 0}
     for f in files:
+        path = f.get("stored_path")
+        if not path:
+            results["skipped"] += 1
+            continue
         try:
-            path = f.get("stored_path")
-            if not path or not os.path.exists(path):
-                continue
-            # extract text
-            text = ""
+            # read file - plain text or pdf/docx extraction not included here
+            # For best results, keep the same extractor you use in app.upload_file (extract_pdf_text/extract_docx_text)
+            content = ""
             if path.lower().endswith(".pdf"):
-                # user should provide pdf extraction function externally
-                from pdf_utils import extract_pdf_text as ext_pdf
-                text = ext_pdf(path)
+                try:
+                    # lazy import to avoid heavy deps at module import time
+                    import fitz
+                    with fitz.open(path) as pdf:
+                        content = "\n".join([p.get_text("text") for p in pdf])
+                except Exception as e:
+                    print("pdf extract error:", e)
+                    results["errors"] += 1
+                    continue
             elif path.lower().endswith(".docx"):
-                from app import extract_docx_text as ext_docx
-                text = ext_docx(path)
+                try:
+                    import docx
+                    doc = docx.Document(path)
+                    content = "\n".join([p.text for p in doc.paragraphs])
+                except Exception as e:
+                    print("docx extract error:", e)
+                    results["errors"] += 1
+                    continue
             else:
-                with open(path, "r", encoding="utf8", errors="ignore") as fh:
-                    text = fh.read()
-            # chunk + embed + insert into index
-            metas = index_document(db, f.get("conv_id"), f.get("_id"), f.get("original_name"), text, f.get("user_id"), index_name=index_name)
+                try:
+                    with open(path, "r", encoding="utf8", errors="ignore") as fh:
+                        content = fh.read()
+                except Exception as e:
+                    print("text file read error:", e)
+                    results["errors"] += 1
+                    continue
+
+            idx_res = index_document(
+                db=db,
+                conv_id=str(f.get("conv_id")),
+                file_record_id=str(f.get("_id")),
+                filename=f.get("original_name"),
+                text=content,
+                user_id=f.get("user_id"),
+                index_name=index_name
+            )
+            results["indexed"] += idx_res.get("count", 0) if isinstance(idx_res, dict) else 0
         except Exception as e:
-            print("reindex error for file", f.get("_id"), e)
-    # persisted inside index_document calls
-    save_index(index, index_name)
-    return True
+            print("reindex_all_files error for file:", f.get("_id"), e)
+            results["errors"] += 1
+
+    return results
