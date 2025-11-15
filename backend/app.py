@@ -895,13 +895,15 @@ def stream_chat():
         # -----------------------------------------------------
         # 5. BUILD AI MESSAGE LIST
         # -----------------------------------------------------
-        
+        # -----------------------------------------------------
+# 5. BUILD AI MESSAGE LIST  (MUST COME FIRST)
+# -----------------------------------------------------
+            messages_for_ai = [{"role": "system", "content": system_prompt}]
+            messages_for_ai.extend(message_history)
+            messages_for_ai.append({"role": "user", "content": user_message_payload})
+
         # retrieve top relevant chunks from embeddings based on current user message
-        try:
-           from embedding_utils import retrieve
-           top_chunks = retrieve(db, message, top_k=5, index_name="global")
-        except Exception as e:
-           top_chunks = []
+        
 
         # Build a retrieval prompt (pinned system message)
         if top_chunks:
@@ -1139,8 +1141,9 @@ def upload_file():
             file_record_id = file_res.inserted_id
 
             # index chunks into FAISS and store entries in 'embeddings' collection
-            from embedding_utils import index_document
-            metas = index_document(db, ObjectId(conv_id), file_record_id, file.filename, content, user_id, index_name="global")
+            # embeddings disabled for now
+            metas = []
+
         except Exception as e:
             print("embedding/index error:", e)
 
