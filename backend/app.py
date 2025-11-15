@@ -934,22 +934,30 @@ def list_files(user_id):
     except Exception as e:
         print("list_files error:", e)
         return jsonify([])
-
 @app.route("/api/upload", methods=["POST"])
 def upload_file():
+    """
+    ChatGPT-style upload:
+    - Does NOT create a new conversation unless conv_id is missing
+    - Stores extracted document text as a hidden assistant message
+    - Allows MULTI-TURN chat with the file
+    - Lets users ask followup questions about the PDF
+    """
     try:
         user_id = request.form.get("user_id")
+        conv_id = request.form.get("conv_id")  # new: continue same chat
         task = request.form.get("task", "summarize")
         file = request.files.get("file")
 
         if not user_id or not file:
             return jsonify({"error": "Missing fields"}), 400
 
+        # ---- Save actual uploaded file ----
         filename = f"{uuid.uuid4().hex}_{file.filename}"
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         file.save(filepath)
 
-        # extract text
+        # ---- Extract text from uploaded doc ----
         lower = filename.lower()
         if lower.endswith(".pdf"):
             content = extract_pdf_text(filepath)
@@ -960,47 +968,68 @@ def upload_file():
         else:
             return jsonify({"error": "Unsupported file type"}), 400
 
-        # AI summary
-        context = "Summarize clearly."
-        reply = ask_ai(context, content[:8000])
+        # ---- Create conversation if needed ----
+        if not conv_id or not is_valid_objectid(conv_id):
+            conv = {
+                "user_id": user_id,
+                "title": file.filename,
+                "created_at": time.time(),
+                "updated_at": time.time(),
+                "last_message": ""
+            }
+            conv_res = db.get_collection("conversations").insert_one(conv)
+            conv_id = str(conv_res.inserted_id)
 
-        # pdf generate
-        pdfname = f"{uuid.uuid4().hex[:8]}.pdf"
-        text_to_pdf(reply, pdfname)
-
-        # -------------------------------
-        # CREATE NEW CONVERSATION HERE
-        # -------------------------------
-        conv = {
-            "user_id": user_id,
-            "title": file.filename,
-            "created_at": time.time(),
-            "updated_at": time.time(),
-            "last_message": reply
-        }
-        conv_res = db.get_collection("conversations").insert_one(conv)
-        conv_id = conv_res.inserted_id
-
-        # save messages
+        # ---- (KEY FEATURE) Insert the file content as a hidden system message ----
+        # This is how ChatGPT allows follow-up questions about the file.
         db.get_collection("messages").insert_one({
-            "conv_id": conv_id,
-            "role": "user",
-            "content": f"📄 {file.filename}",
+            "conv_id": ObjectId(conv_id),
+            "role": "system",
+            "content": f"__FILE_CONTENT__\n{content}",
             "timestamp": time.time()
         })
+
+        # ---- Save user message indicating upload ----
         db.get_collection("messages").insert_one({
-            "conv_id": conv_id,
+            "conv_id": ObjectId(conv_id),
+            "role": "user",
+            "content": f"📄 Uploaded file: {file.filename}",
+            "timestamp": time.time()
+        })
+
+        # ---- Generate AI summary (first response) ----
+        summary_prompt = (
+            "You are LegalSathi. The user uploaded a document. "
+            "Provide a clear high-level summary. "
+            "DO NOT lose the document content — future prompts will reference it."
+        )
+        reply = ask_ai(summary_prompt, content[:8000])
+
+        # ---- Save assistant reply ----
+        db.get_collection("messages").insert_one({
+            "conv_id": ObjectId(conv_id),
             "role": "assistant",
             "content": reply,
             "timestamp": time.time()
         })
 
-        # save file record
+        # ---- Update conversation metadata ----
+        db.get_collection("conversations").update_one(
+            {"_id": ObjectId(conv_id)},
+            {"$set": {"updated_at": time.time(), "last_message": reply}}
+        )
+
+        # ---- Generate summary PDF ----
+        pdfname = f"{uuid.uuid4().hex[:8]}.pdf"
+        text_to_pdf(reply, pdfname)
+
+        # ---- Also save file record ----
         db.get_collection("file_records").insert_one({
             "user_id": user_id,
             "original_name": file.filename,
             "stored_path": filepath,
             "pdf": pdfname,
+            "conv_id": ObjectId(conv_id),
             "timestamp": time.time()
         })
 

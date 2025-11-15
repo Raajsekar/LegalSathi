@@ -456,6 +456,8 @@ setActiveChat((prev) => {
   fd.append("user_id", user.uid);
   fd.append("task", task);
   fd.append("file", file);
+  fd.append("conv_id", activeChat?._id || "");
+
 
   try {
     const res = await axios.post(`${API_BASE}/api/upload`, fd, {
