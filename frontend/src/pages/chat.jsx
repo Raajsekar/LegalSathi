@@ -23,6 +23,7 @@ import "./chat.css";
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 
 export default function Chat() {
+  const [uploading, setUploading] = useState(false);
   const [user] = useAuthState(auth);
   const [message, setMessage] = useState("");
   const [file, setFile] = useState(null);
@@ -488,77 +489,76 @@ setActiveChat((prev) => {
 
   // --- FILE UPLOAD (summarize / explain) ---
   const handleUpload = async (e) => {
-
-  const file = e.target.files[0];
-  if (!file) return;
+  const f = e.target.files?.[0];
+  if (!f) return;
 
   setUploading(true);
+  setFile(f);
+  setFileName(f.name);
 
   try {
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("user_id", user.uid);
-
-    formData.append("conv_id", activeChat?._id || "");
+    const fd = new FormData();
+    fd.append("file", f);
+    fd.append("user_id", user.uid);
+    fd.append("conv_id", activeChat?._id || "");
 
     const res = await fetch(`${API_BASE}/api/upload`, {
       method: "POST",
-      body: formData,
+      body: fd,
     });
 
     const data = await res.json();
     if (!res.ok) {
       alert(data.error || "Upload failed");
+      setUploading(false);
       return;
     }
 
     const convId = data.conv_id;
 
-    // ---- Update chats array without triggering summary ----
+    // Update chats array
     setChats((prev) => {
-  const updated = prev.map((c) => {
-    if (c._id !== convId) return c;
+      const idx = prev.findIndex((c) => c._id === convId);
+      const newMsg = { role: "user", content: `📄 Uploaded file: ${f.name}` };
 
-    return {
-      ...c,
-      messages: [
-        ...(c.messages || []),
-        { role: "user", content: `📄 Uploaded file: ${file.name}` },
-      ],
-      last_message: `📄 Uploaded file: ${file.name}`,
-    };
-  });
+      if (idx >= 0) {
+        const newList = [...prev];
+        const c = { ...newList[idx] };
+        c.messages = [...(c.messages || []), newMsg];
+        c.last_message = newMsg.content;
+        newList[idx] = c;
+        return newList;
+      }
 
-  const newActive = updated.find((c) => c._id === convId);
-  if (newActive) setActiveChat(newActive);
+      return [
+        {
+          _id: convId,
+          title: f.name,
+          messages: [newMsg],
+          last_message: newMsg.content,
+          timestamp: Date.now() / 1000,
+        },
+        ...prev,
+      ];
+    });
 
-  return updated;
-});
-
-
-    // ---- Update activeChat same way ----
+    // Update active chat
     setActiveChat((prev) => {
-      if (!prev || prev._id !== convId) return prev;
+      if (!prev || prev._id !== convId) {
+        return {
+          _id: convId,
+          title: f.name,
+          messages: [{ role: "user", content: `📄 Uploaded file: ${f.name}` }],
+          last_message: `📄 Uploaded file: ${f.name}`,
+        };
+      }
 
       return {
         ...prev,
-        messages: [
-          ...prev.messages,
-          {
-            role: "user",
-            content: `📄 Uploaded file: ${file.name}`,
-          },
-        ],
-        last_message: `📄 Uploaded file: ${file.name}`,
+        messages: [...prev.messages, { role: "user", content: `📄 Uploaded file: ${f.name}` }],
+        last_message: `📄 Uploaded file: ${f.name}`,
       };
     });
-
-    // ---- If this was a new chat, select it ----
-    if (!activeChat || activeChat._id !== convId) {
-      const found = chats.find((c) => c._id === convId);
-      if (found) setActiveChat(found);
-    }
-
   } catch (err) {
     console.error("UPLOAD ERROR:", err);
     alert("Upload error");
@@ -566,6 +566,7 @@ setActiveChat((prev) => {
 
   setUploading(false);
 };
+
 
 
 
@@ -905,18 +906,25 @@ const loadConversation = async (conv) => {
         {/* composer */}
         <footer className="p-4 border-t border-gray-800 bg-[#0f1012]">
           <div className="max-w-6xl mx-auto flex items-center gap-3 composer-row">
-            <input id="file-input" type="file" accept=".pdf,.docx,.txt" onChange={(e) => {
-  onFileChange(e);   // keep your original behavior
-  handleUpload(e);   // actually upload the file
-}}
- className="hidden" />
-            <label htmlFor="file-input" className="cursor-pointer px-3 py-2 bg-[#121214] border border-gray-700 rounded flex items-center gap-2 text-sm">
-              <Upload size={14} /> {fileName ? fileName : "Choose file"}
-            </label>
+            <input
+  id="file-input"
+  type="file"
+  accept=".pdf,.docx,.txt"
+  onChange={handleUpload}   // only one handler
+  className="hidden"
+/>
+
+<label
+  htmlFor="file-input"
+  className="cursor-pointer px-3 py-2 bg-[#121214] border border-gray-700 rounded flex items-center gap-2 text-sm"
+>
+  <Upload size={14} /> {fileName ? fileName : "Choose file"}
+</label>
+
 
             <div className="flex-1 relative textarea-wrapper">
               <textarea
-  value={message.replace(/¶INTERIM:.*$/, "")}
+  value={message}
   onKeyDown={(e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -948,12 +956,13 @@ const loadConversation = async (conv) => {
             <div className="flex flex-col gap-2">
               <button
   onClick={() => {
-    if (file) {
-      document.getElementById("file-input").dispatchEvent(new Event("change", { bubbles: true }));
-    } else {
-      sendMessage();
-    }
-  }}
+  if (file) {
+    handleUpload({ target: { files: [file] } });
+  } else {
+    sendMessage();
+  }
+}}
+
  disabled={loading} className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded text-sm">
                 {loading ? "Processing..." : file ? (task === "summarize" ? "Summarize" : task === "contract" ? "Draft" : "Explain") : "Send"}
               </button>
