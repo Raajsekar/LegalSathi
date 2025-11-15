@@ -7,6 +7,6 @@ reportlab
 pymupdf
 python-docx
 gunicorn
-numpy
+numpy==1.26.4
 sentence-transformers
 faiss-cpu
