@@ -77,22 +77,16 @@ def dot(a: List[float], b: List[float]) -> float:
 # -----------------------
 def embed_text_groq(text: str) -> List[float]:
     if groq_client is None:
-        raise RuntimeError("Groq client not configured. Set GROQ_API_KEY and install groq package.")
-    # Try several possible SDK shapes (some groq SDKs expose different methods)
+        raise RuntimeError("Groq client not configured.")
+
     try:
-        if hasattr(groq_client, "embeddings") and hasattr(groq_client.embeddings, "create"):
-            res = groq_client.embeddings.create(model="embed-english-v1", input=text)
-            # res.data[0].embedding or res.data[0]
-            first = res.data[0]
-            emb = getattr(first, "embedding", first)
-            return list(emb)
-        elif hasattr(groq_client, "embeddings") and hasattr(groq_client.embeddings, "embed"):
-            res = groq_client.embeddings.embed(model="embed-english-v1", input=text)
-            return list(res)
-        elif hasattr(groq_client, "embed"):
-            return list(groq_client.embed(text))
-        else:
-            raise RuntimeError("Groq client does not expose a recognized embeddings API. Check SDK.")
+        res = groq_client.embeddings.create(
+            model="nomic-embed-text",
+            input=text
+        )
+        emb = res.data[0].embedding
+        return list(emb)
+
     except Exception as e:
         raise RuntimeError(f"Groq embedding error: {e}")
 
