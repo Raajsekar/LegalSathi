@@ -1,6 +1,9 @@
 # backend/app.py
 from flask import Flask, request, jsonify, send_file, Response
-
+import re
+from docx import Document
+from io import BytesIO
+import uuid
 from flask_cors import CORS
 from flask import request
 from dotenv import load_dotenv
@@ -9,6 +12,7 @@ from bson.objectid import ObjectId
 from flask import stream_with_context
 import json
 import time
+DOCX_TEMP = {}
 # AI SDK import (Groq)
 try:
     from groq import Groq
@@ -245,7 +249,394 @@ def simulate_stream(text, chunk_size=30, delay=0.03):
         time.sleep(delay)  # short pause so frontend gets streaming feel
         yield chunk
 
+# ============================================================
+#  GLOBAL LEGAL INTENT ROUTER + JURISDICTION DETECTOR + STYLE ENGINE
+# ============================================================
 
+
+
+
+# -------------------------------------------
+# 1. AUTO JURISDICTION DETECTOR (GLOBAL)
+# -------------------------------------------
+def detect_jurisdiction(text: str):
+    t = text.lower()
+
+    # USA STATES
+    usa_states = {
+        "california", "texas", "new york", "florida", "illinois",
+        "ohio", "georgia", "pennsylvania", "washington", "virginia"
+    }
+
+    for st in usa_states:
+        if st in t:
+            return ("USA", st.title())
+
+    # COUNTRY DETECTION
+    if "india" in t or "gst" in t or "gstr" in t:
+        return ("India", "India")
+
+    if "dubai" in t or "uae" in t or "sharjah" in t or "fta" in t:
+        return ("UAE", "UAE")
+
+    if "singapore" in t:
+        return ("Singapore", "Singapore")
+
+    if "uk" in t or "england" in t or "wales" in t or "hmrc" in t:
+        return ("UK", "United Kingdom")
+
+    if "australia" in t or "nsw" in t or "queensland" in t:
+        return ("Australia", "Australia")
+
+    if "canada" in t:
+        return ("Canada", "Canada")
+
+    if "europe" in t or "eu" in t or "gdpr" in t:
+        return ("EU", "European Union")
+
+    # Default global
+    return ("Global", "Generic")
+
+
+# -------------------------------------------
+# 2. WRITING STYLE DETECTOR (Simple vs Legal English)
+# -------------------------------------------
+def detect_writing_style(message: str):
+    """
+    Auto-detect style:
+    - Simple English for common users
+    - Legal English for professional/legal queries
+    """
+
+    msg = message.lower()
+
+    legal_keywords = [
+        "whereas", "hereto", "hereby", "indemnity",
+        "governing law", "jurisdiction", "arbitration",
+        "non-disclosure", "breach", "termination clause",
+        "section", "sub-section", "pursuant", "notwithstanding",
+        "liability", "force majeure"
+    ]
+
+    if any(word in msg for word in legal_keywords):
+        return "legal"
+
+    if len(message.split()) < 6:
+        return "simple"
+
+    # Tax & notice replies use simple format by default
+    tax_flags = ["gst", "vat", "irs", "hmrc", "fta", "143", "notice", "scn", "drc"]
+    if any(w in msg for w in tax_flags):
+        return "simple"
+
+    # Default
+    return "simple"
+
+
+# -------------------------------------------
+# 3. GLOBAL LEGAL INTENT ROUTER
+# -------------------------------------------
+def detect_legal_intent(message: str):
+    """
+    Returns one of:
+    - 'contract'
+    - 'notice_reply'
+    - 'tax_reply'
+    - 'clause_review'
+    - 'document_summary'
+    - 'lawyer_mode'
+    - 'generic_chat'
+    """
+
+    m = message.lower()
+
+    # CONTRACT / AGREEMENT DRAFTING
+    contract_terms = [
+        "draft agreement", "draft contract", "prepare agreement", "create contract",
+        "employment agreement", "rental agreement", "partnership deed",
+        "mou", "nda", "service agreement", "lease agreement"
+    ]
+    if any(t in m for t in contract_terms):
+        return "contract"
+
+    # TAX REPLY
+    tax_patterns = [
+        r"\bscn\b", r"drc-01", r"asmt-10", r"143\(1\)", r"143\(2\)", r"\b148\b",
+        "gst notice", "vat notice", "hmrc", "irs", "cp2000", "fta notice"
+    ]
+    if any(re.search(p, m) for p in tax_patterns):
+        return "tax_reply"
+
+    # GENERAL NOTICE / LEGAL REPLY
+    if "legal notice" in m or "reply notice" in m or "send a notice" in m:
+        return "notice_reply"
+
+    # CLAUSE REVIEW
+    review_terms = ["review clause", "improve clause", "rewrite clause", "redraft clause"]
+    if any(t in m for t in review_terms):
+        return "clause_review"
+
+    # DOCUMENT SUMMARY
+    if "summarize" in m or "highlight points" in m or "explain this document" in m:
+        return "document_summary"
+
+    # LAWYER MODE
+    if "section" in m or "supreme court" in m or "precedent" in m:
+        return "lawyer_mode"
+
+    # Default
+    return "generic_chat"
+
+
+def generate_contract(jurisdiction, message, style="simple"):
+    """
+    Generate a global contract draft template based on jurisdiction.
+    """
+    country, region = jurisdiction
+
+    # Writing style
+    if style == "legal":
+        tone = "Use formal legal English, contract-style sentences, numbered clauses, and professional structure."
+    else:
+        tone = "Use clear, simple English with easy-to-understand clauses."
+
+    # Jurisdiction-specific governing law
+    governing = {
+        "India": "This Agreement shall be governed by the laws of India.",
+        "UAE": "This Agreement shall be governed by the laws of the United Arab Emirates.",
+        "USA": f"This Agreement shall be governed by the laws of the State of {region}, USA.",
+        "UK": "This Agreement shall be governed by the laws of England and Wales.",
+        "Singapore": "This Agreement shall be governed by the laws of Singapore.",
+        "Australia": "This Agreement shall be governed by the laws of Australia.",
+        "Canada": "This Agreement shall be governed by the laws of Canada.",
+        "EU": "This Agreement shall comply with relevant EU Contract Laws and Regulations.",
+        "Global": "This Agreement shall be interpreted under internationally accepted legal principles."
+    }.get(country, "This Agreement shall be interpreted under internationally accepted legal principles.")
+
+    draft = f"""
+{tone}
+
+### AGREEMENT / CONTRACT – AUTO-DRAFTED
+
+**Jurisdiction:** {country} ({region})
+
+---
+
+### 1. Parties
+This Agreement is made between:
+- **Party A:** ______________________  
+- **Party B:** ______________________  
+
+---
+
+### 2. Purpose
+Describe the purpose of this contract clearly:
+“{message[:300]}...”
+
+---
+
+### 3. Term
+The Agreement shall commence on __________ and remain valid until __________ unless terminated earlier.
+
+---
+
+### 4. Responsibilities of Party A
+- ____________________________
+- ____________________________
+- ____________________________
+
+### 5. Responsibilities of Party B
+- ____________________________
+- ____________________________
+- ____________________________
+
+---
+
+### 6. Payment Terms
+- Amount payable: __________  
+- Currency: __________  
+- Payment due on: __________  
+- Method of payment: __________  
+
+---
+
+### 7. Confidentiality
+Both parties agree to maintain strict confidentiality regarding all shared information.
+
+---
+
+### 8. Intellectual Property
+All intellectual property created under this Agreement shall belong to:
+□ Party A  
+□ Party B  
+□ Jointly (tick one)
+
+---
+
+### 9. Indemnity
+Each party agrees to indemnify the other against losses arising from breach, negligence, or misconduct.
+
+---
+
+### 10. Limitation of Liability
+Neither party shall be liable for indirect, incidental, or consequential damages.
+
+---
+
+### 11. Termination
+This Agreement may be terminated:
+- By mutual agreement  
+- For breach of terms  
+- Upon written notice of ____ days  
+
+---
+
+### 12. Dispute Resolution
+Disputes shall be resolved through:
+□ Negotiation  
+□ Mediation  
+□ Arbitration  
+□ Court proceedings
+
+---
+
+### 13. Governing Law
+{governing}
+
+---
+
+### 14. Signatures
+
+Party A: _____________________  Date: ________
+
+Party B: _____________________  Date: ________
+
+---
+
+*This is an auto-generated draft. Please review before use.*
+"""
+
+    return draft.strip()
+
+
+# -------------------------------------------
+# 5. TAX NOTICE REPLY ENGINE (GLOBAL)
+# -------------------------------------------
+def generate_tax_reply(jurisdiction, message, style="simple"):
+    """
+    Automatically generate a tax notice reply for GST/VAT/IRS/HMRC/Income Tax.
+    """
+    country, region = jurisdiction
+
+    intro = {
+        "India": "Subject: Reply to GST / Income Tax Notice",
+        "UAE": "Subject: Response to UAE FTA VAT Notice",
+        "UK": "Subject: Response to HMRC VAT Compliance Notice",
+        "USA": "Subject: Response to IRS Notice (including CP2000)",
+        "EU": "Subject: Response to EU Tax Compliance Communication",
+        "Global": "Subject: Response to Tax / Compliance Notice"
+    }.get(country, "Subject: Reply to Tax Notice")
+
+    if style == "legal":
+        tone = "Use formal language suitable for tax authorities, referencing relevant statutes where appropriate."
+    else:
+        tone = "Explain clearly in simple English without legal jargon."
+
+    reply = f"""
+{intro}
+
+{tone}
+
+---
+
+### 1. Basic Reference Details
+- Notice Reference Number: _____________________
+- Date of Notice: _____________________
+- Tax Period: _____________________
+
+---
+
+### 2. Acknowledgement
+We acknowledge receipt of your notice regarding:
+
+“{message[:250]}...”
+
+---
+
+### 3. Background / Facts
+Provide brief facts:
+- Nature of business  
+- Relevant transactions  
+- Key documents already submitted  
+
+---
+
+### 4. Clarification / Explanation
+Insert specific explanation for each point raised in the notice:
+- Issue 1: _____________________  
+- Issue 2: _____________________  
+- Issue 3: _____________________  
+
+---
+
+### 5. Supporting Evidence
+We are enclosing the following:
+- Invoices  
+- Bank statements  
+- Ledgers  
+- Contracts  
+- Other supporting documents  
+
+---
+
+### 6. Legal/Procedural Position
+(If applicable based on jurisdiction)
+- GST Act (India)  
+- VAT Decree (UAE)  
+- HMRC VAT Rules (UK)  
+- IRS Code (USA)  
+
+---
+
+### 7. Conclusion
+We request the authority to kindly consider the above explanation and drop the proceedings.
+
+---
+
+### 8. Declaration
+We declare that the information furnished above is true and correct.
+
+---
+
+Authorized Signatory  
+Name: _____________________  
+Date: _____________________
+
+---
+
+*This is an auto-generated reply. Cross-check before submission.*
+"""
+
+    return reply.strip()
+
+
+# -------------------------------------------
+# 6. PDF + DOCX GENERATION
+# -------------------------------------------
+def generate_docx_stream(text: str):
+    """
+    Create a DOCX file in memory and return (filename, BytesIO buffer)
+    """
+    doc = Document()
+    for line in text.split("\n"):
+        doc.add_paragraph(line)
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    filename = f"{uuid.uuid4().hex}.docx"
+    return filename, buffer
 # --- Routes ---
 
 @app.route("/api/gst/calc", methods=["POST"])
@@ -300,12 +691,35 @@ def api_gst_tips():
 def home():
     return "⚖️ LegalSathi backend active"
 
+
+@app.route("/download_docx/<filename>")
+def download_docx(filename):
+    if filename not in DOCX_TEMP:
+        return "File not found", 404
+
+    buffer = DOCX_TEMP[filename]
+    return send_file(
+        buffer,
+        download_name=filename,
+        as_attachment=True,
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+# ============================================================
+#  PART 3 — FULL UPGRADED /api/stream_chat (GLOBAL LEGALSATHI ENGINE)
+# ============================================================
+
 @app.route("/api/stream_chat", methods=["POST"])
 def stream_chat():
     """
-    Streams assistant reply as JSON lines.
-    Fully fixed version — stable, works with Groq + your frontend.
+    GLOBAL LEGALSATHI STREAMING ENGINE
+    - Detects legal intent
+    - Detects jurisdiction
+    - Detects writing style
+    - Uses drafting & tax engines
+    - Streams AI output
+    - After stream completes → generates PDF + DOCX
     """
+
     try:
         data = request.get_json(force=True)
         user_id = data.get("user_id")
@@ -315,141 +729,170 @@ def stream_chat():
         if not user_id or not message:
             return jsonify({"error": "Missing user_id or message"}), 400
 
-      
-
-                # 1. VALIDATE / CREATE CONVERSATION (fixed indentation & DB-absent handling)
+        # -----------------------------------------------------
+        # 1. CREATE OR VALIDATE CONVERSATION
+        # -----------------------------------------------------
         conv_doc = None
 
+        # New conversation?
         if not conv_id or not is_valid_objectid(conv_id):
-            # Create new conversation (safe if DB is missing)
-            conv = create_conversation(user_id, title=message[:50] or "Conversation")
+            conv = create_conversation(user_id, title="New conversation")
             conv_id = conv["_id"]
             conv_doc = conv
+
         else:
-            # conv_id provided — only check DB if db exists
+            # Validate existing conversation (if DB exists)
             if db is not None:
                 try:
                     conv_doc = db.get_collection("conversations").find_one({"_id": ObjectId(conv_id)})
-                except Exception as e:
-                    conv_doc = None
-                if not conv_doc or conv_doc.get("user_id") != user_id:
+                    if not conv_doc or conv_doc.get("user_id") != user_id:
+                        return jsonify({"error": "Invalid conversation ID"}), 403
+                except:
                     return jsonify({"error": "Invalid conversation ID"}), 403
             else:
-                # DB down: accept provided conv_id as local placeholder
                 conv_doc = {"_id": conv_id, "user_id": user_id}
-
-
-
-        
-        
-        
 
         # Save user message
         add_message(conv_id, "user", message)
 
-        # -------------------------
-        # 2. BUILD CONTEXT
-        # -------------------------
-        context_msgs = build_context(conv_id, max_messages=12)
+        # -----------------------------------------------------
+        # 2. DETECT INTENT, JURISDICTION, STYLE
+        # -----------------------------------------------------
+        intent = detect_legal_intent(message)
+        jurisdiction = detect_jurisdiction(message)
+        style = detect_writing_style(message)
 
-        # -------------------------
-        # 3. PICK SYSTEM PROMPT
-        # -------------------------
-        lower = message.lower()
-        if any(x in lower for x in ["agreement", "contract", "draft"]):
-            system_prompt = (
-                "Draft a detailed Indian legal agreement with clear clauses, parties, "
-                "duration, payment terms, liabilities, termination, and governing law. "
-                "Use professional Indian legal language."
-            )
-        elif any(x in lower for x in ["summarize", "highlight", "summary"]):
-            system_prompt = (
-                "Summarize this Indian legal document and highlight the main points, "
-                "obligations, deadlines, and risks."
-            )
+        # -----------------------------------------------------
+        # 3. SYSTEM PROMPT BASED ON ROUTED INTENT
+        # -----------------------------------------------------
+        if intent == "contract":
+            system_prompt = "You are LegalSathi, a global contract drafting expert. Generate structured legal agreements as per detected jurisdiction."
+
+        elif intent == "tax_reply":
+            system_prompt = "You are LegalSathi, a global tax notice reply expert. Generate clear, concise, structured replies for GST, VAT, IRS, HMRC, IT notices."
+
+        elif intent == "notice_reply":
+            system_prompt = "You are LegalSathi, draft professional legal notices and replies."
+
+        elif intent == "clause_review":
+            system_prompt = "You are LegalSathi, a clause rewriting expert. Improve, polish, and legally strengthen clauses."
+
+        elif intent == "document_summary":
+            system_prompt = "You are LegalSathi, summarize documents clearly with risks highlighted."
+
+        elif intent == "lawyer_mode":
+            system_prompt = "You are LegalSathi-ADV, behaving like a senior lawyer. Provide deep legal reasoning, citations, and structured guidance."
+
         else:
-            system_prompt = (
-                "You are LegalSathi, a professional Indian legal assistant. "
-                "Explain clearly, avoid hallucinations, and follow Indian law."
+            system_prompt = "You are LegalSathi, a global AI legal assistant."
+
+        # Branding only ONCE (first assistant message)
+        message_history = build_context(conv_id, max_messages=12)
+        is_first_reply = len(message_history) <= 1
+
+        branding = ""
+        if is_first_reply:
+            branding = (
+                "I am **LegalSathi**, your global AI legal assistant. "
+                "I can draft agreements, notices, tax replies, and legal documents for any country.\n\n"
             )
 
-        messages_for_ai = [{"role": "system", "content": system_prompt}]
-        messages_for_ai.extend(context_msgs)
-        messages_for_ai.append({"role": "user", "content": message})
+        # -----------------------------------------------------
+        # 4. PRE-GENERATE TEMPLATE IF CONTRACT or TAX ENGINE
+        # -----------------------------------------------------
+        pre_generated = None
 
-# 🔥 TRIM CONTEXT BEFORE SENDING TO GROQ
+        if intent == "contract":
+            pre_generated = generate_contract(jurisdiction, message, style)
+
+        elif intent == "tax_reply":
+            pre_generated = generate_tax_reply(jurisdiction, message, style)
+
+        # Add branding + pre-generated structure to messages
+        user_message_payload = branding
+        if pre_generated:
+            user_message_payload += f"Here is the structured draft template:\n\n{pre_generated}\n\nNow refine the above draft based on the user's request:\n\n{message}"
+        else:
+            user_message_payload += message
+
+        # -----------------------------------------------------
+        # 5. BUILD AI MESSAGE LIST
+        # -----------------------------------------------------
+        messages_for_ai = [{"role": "system", "content": system_prompt}]
+        messages_for_ai.extend(message_history)
+        messages_for_ai.append({"role": "user", "content": user_message_payload})
+
         messages_for_ai = trim_messages(messages_for_ai, max_chars=7500)
 
-
-        # -------------------------
-        # 4. STREAMING GENERATOR
-        # -------------------------
-        def generate():
+        # -----------------------------------------------------
+        # 6. STREAMING RESPONSE GENERATOR
+        # -----------------------------------------------------
+        def generate_stream():
             final_text = ""
 
+            # Stream from GROQ
             try:
-
-                # real Groq streaming
                 for chunk in client.chat.completions.create(
                     model="llama-3.1-8b-instant",
                     messages=messages_for_ai,
                     stream=True
-):
+                ):
                     if (
                         chunk
                         and chunk.choices
                         and hasattr(chunk.choices[0].delta, "content")
                         and chunk.choices[0].delta.content
-    ):
+                    ):
                         delta = chunk.choices[0].delta.content
                         final_text += delta
                         yield json.dumps({"chunk": delta}) + "\n"
 
-
             except Exception as stream_err:
-                print("Streaming failed → fallback:", stream_err)
+                print("Streaming failed:", stream_err)
+                yield json.dumps({"chunk": "\n[Streaming failed]\n"}) + "\n"
 
-                try:
-                    # fallback: full completion
-                    completion = client.chat.completions.create(
-                        model="llama-3.1-8b-instant",
-                        messages=messages_for_ai,
-                        stream=False
-                    )
-                    final_text = completion.choices[0].message.content.strip()
-
-                    # simulate stream
-                    for ch in simulate_stream(final_text):
-                        yield json.dumps({"chunk": ch}) + "\n"
-
-                except Exception as fatal:
-                    print("FATAL AI ERROR:", fatal)
-                    yield json.dumps({"error": "AI error"}) + "\n"
-                    final_text = "[AI Error]"
-            
-            # -------------------------
-            # Save final reply
-            # -------------------------
+            # -----------------------------------------------------
+            # 7. SAVE ASSISTANT RESPONSE
+            # -----------------------------------------------------
             try:
                 add_message(conv_id, "assistant", final_text)
                 db.get_collection("conversations").update_one(
                     {"_id": ObjectId(conv_id)},
-                    {"$set": {
-                        "updated_at": time.time(),
-                        "title": (final_text[:80] or "Conversation")
-                    }}
+                    {
+                        "$set": {
+                            "updated_at": time.time(),
+                            "title": (final_text[:60] or "Conversation"),
+                            "last_message": final_text
+                        }
+                    }
                 )
             except Exception as e:
-                print("Failed to save assistant message:", e)
+                print("Save assistant error:", e)
 
-            # Final signal
-            yield json.dumps({"done": True, "conv_id": conv_id}) + "\n"
+            # -----------------------------------------------------
+            # 8. GENERATE PDF + DOCX AFTER STREAM ENDS
+            # -----------------------------------------------------
+            from pdf_utils import text_to_pdf
+            pdf_name = f"{uuid.uuid4().hex}.pdf"
+            pdf_path = text_to_pdf(final_text, pdf_name)
 
-        # return streaming response
-        return Response(
-            stream_with_context(generate()),
-            mimetype="text/plain; charset=utf-8"
-        )
+            # DOCX (in-memory)
+            docx_name, docx_buffer = generate_docx_stream(final_text)
+
+            # Save DOCX buffer to temp memory store
+            DOCX_TEMP[docx_name] = docx_buffer
+
+            # -----------------------------------------------------
+            # 9. FINAL SIGNAL
+            # -----------------------------------------------------
+            yield json.dumps({
+                "done": True,
+                "conv_id": conv_id,
+                "pdf_url": f"/download/{pdf_name}",
+                "docx_url": f"/download_docx/{docx_name}"
+            }) + "\n"
+
+        return Response(stream_with_context(generate_stream()), mimetype="text/plain")
 
     except Exception as e:
         print("stream_chat error:", e)

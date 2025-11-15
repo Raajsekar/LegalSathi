@@ -290,6 +290,9 @@ setActiveChat((prev) => {
  
 else if (obj.done) {
   const convId = obj.conv_id || existingConvId || optimisticEntry._id;
+    const pdfUrl = obj.pdf_url || null;
+  const docxUrl = obj.docx_url || null;
+
 
   // update chats: replace local id, set title only if not present,
   // set last_message and ensure messages array has final assistant message
@@ -304,13 +307,16 @@ else if (obj.done) {
       const finalMsgs = (c.messages || []).filter((m) => m.role !== "assistant").concat({ role: "assistant", content: accumulated });
 
       return {
-        ...c,
-        _id: convId,
-        reply: accumulated,
-        title: keepTitle,
-        last_message: accumulated,
-        messages: finalMsgs,
-      };
+  ...c,
+  _id: convId,
+  reply: accumulated,
+  title: keepTitle,
+  last_message: accumulated,
+  messages: finalMsgs,
+  pdf_url: pdfUrl,
+  docx_url: docxUrl,   // <-- The new key
+};
+
     });
 
     // move updated conv to front (so sidebar shows this on top)
@@ -333,13 +339,16 @@ else if (obj.done) {
     const finalMsgs = (prev.messages || []).filter((m) => m.role !== "assistant").concat({ role: "assistant", content: accumulated });
 
     return {
-      ...prev,
-      _id: convId,
-      reply: accumulated,
-      title: keepTitle,
-      last_message: accumulated,
-      messages: finalMsgs,
-    };
+  ...prev,
+  _id: convId,
+  reply: accumulated,
+  title: keepTitle,
+  last_message: accumulated,
+  messages: finalMsgs,
+  pdf_url: pdfUrl,
+  docx_url: docxUrl,  // <-- new addition
+};
+
   });
 }
 
@@ -762,6 +771,18 @@ const loadConversation = async (conv) => {
         <FileText size={16} /> Download PDF
       </a>
     )}
+
+        {activeChat.docx_url && (
+      <a 
+        href={activeChat.docx_url.startsWith("http") ? activeChat.docx_url : `${API_BASE}${activeChat.docx_url}`}
+        target="_blank"
+        rel="noreferrer"
+        className="text-blue-400 hover:underline flex items-center gap-2"
+      >
+        <FileText size={16} /> Download DOCX
+      </a>
+    )}
+
 
     <button 
       onClick={() => handleCopy(activeChat.messages.slice(-1)[0]?.content || "")} 
