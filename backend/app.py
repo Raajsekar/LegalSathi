@@ -12,14 +12,6 @@ from bson.objectid import ObjectId
 from flask import stream_with_context
 import json
 import time
-from legal_engine import (
-    detect_legal_intent, detect_jurisdiction, detect_writing_style,
-    generate_contract, generate_tax_reply, generate_docx_stream,
-    clause_review, precedent_search, make_jurisdiction_note
-)
-# add after other imports
-from embedding_utils import retrieve as retrieve_relevant_chunks, index_document, reindex_all_files
-
 DOCX_TEMP = {}
 # AI SDK import (Groq)
 try:
@@ -123,8 +115,6 @@ def calculate_gst(amount: float, rate_percent: float, inclusive=False, interstat
         "inclusive": inclusive,
         "interstate": interstate,
     }
-
-
 def trim_messages(messages, max_chars=8000):
     """
     Ensure the message history does not exceed max_chars.
@@ -149,34 +139,6 @@ def trim_messages(messages, max_chars=8000):
 
     # restore chronological order
     return list(reversed(trimmed))
-
-
-# -------------------------------
-# CHATGPT-STYLE CONVERSATION BUILDER
-# -------------------------------
-def ls_build_context(conv_id, limit=30):
-    """
-    Loads messages in correct chronological order.
-    Includes document system messages.
-    """
-    msgs = list(
-        db.get_collection("messages")
-        .find({"conv_id": ObjectId(conv_id)})
-        .sort("timestamp", 1)
-    )
-
-    formatted = []
-    for m in msgs:
-        formatted.append({
-            "role": m["role"],
-            "content": m["content"]
-        })
-
-    # keep only last X messages (ChatGPT behaviour)
-    if len(formatted) > limit:
-        formatted = formatted[-limit:]
-
-    return formatted
 
 # --- AI helper ---
 def ask_ai(context, prompt):
@@ -426,6 +388,7 @@ def detect_legal_intent(message: str):
     return "generic_chat"
 
 # conversation_builder.py
+
 
 def build_conversation(conv_id, new_user_message):
     """
@@ -754,22 +717,6 @@ def api_gst_tips():
 def home():
     return "⚖️ LegalSathi backend active"
 
-@app.route("/api/clause_review", methods=["POST"])
-def api_clause_review():
-    data = request.get_json(force=True)
-    clause = data.get("clause", "")
-    if not clause:
-        return jsonify({"error": "Missing clause"}), 400
-    res = clause_review(clause)
-    return jsonify(res)
-
-@app.route("/api/precedent_search", methods=["GET"])
-def api_precedent_search():
-    user_id = request.args.get("user_id")
-    q = request.args.get("q", "")
-    hits = precedent_search(user_id, q, limit=8)
-    return jsonify(hits)
-
 
 @app.route("/download_docx/<filename>")
 def download_docx(filename):
@@ -789,6 +736,16 @@ def download_docx(filename):
 
 @app.route("/api/stream_chat", methods=["POST"])
 def stream_chat():
+    """
+    GLOBAL LEGALSATHI STREAMING ENGINE
+    - Detects legal intent
+    - Detects jurisdiction
+    - Detects writing style
+    - Uses drafting & tax engines
+    - Streams AI output
+    - After stream completes → generates PDF + DOCX
+    """
+
     try:
         data = request.get_json(force=True)
         user_id = data.get("user_id")
@@ -798,156 +755,167 @@ def stream_chat():
         if not user_id or not message:
             return jsonify({"error": "Missing user_id or message"}), 400
 
-        # ------------------------------------------------------------------
+        # -----------------------------------------------------
         # 1. CREATE OR VALIDATE CONVERSATION
-        # ------------------------------------------------------------------
+        # -----------------------------------------------------
+        conv_doc = None
+
+        # New conversation?
         if not conv_id or not is_valid_objectid(conv_id):
-            conv_doc = create_conversation(user_id, title="New conversation")
-            conv_id = conv_doc["_id"]
+            conv = create_conversation(user_id, title="New conversation")
+            conv_id = conv["_id"]
+            conv_doc = conv
+
         else:
-            conv_doc = db.conversations.find_one({"_id": ObjectId(conv_id)})
-            if not conv_doc or conv_doc.get("user_id") != user_id:
-                return jsonify({"error": "Invalid conversation ID"}), 403
+            # Validate existing conversation (if DB exists)
+            if db is not None:
+                try:
+                    conv_doc = db.get_collection("conversations").find_one({"_id": ObjectId(conv_id)})
+                    if not conv_doc or conv_doc.get("user_id") != user_id:
+                        return jsonify({"error": "Invalid conversation ID"}), 403
+                except:
+                    return jsonify({"error": "Invalid conversation ID"}), 403
+            else:
+                conv_doc = {"_id": conv_id, "user_id": user_id}
 
         # Save user message
         add_message(conv_id, "user", message)
 
-        # ------------------------------------------------------------------
+        # -----------------------------------------------------
         # 2. DETECT INTENT, JURISDICTION, STYLE
-        # ------------------------------------------------------------------
+        # -----------------------------------------------------
         intent = detect_legal_intent(message)
         jurisdiction = detect_jurisdiction(message)
         style = detect_writing_style(message)
 
-        # ------------------------------------------------------------------
-        # 3. SYSTEM PROMPT SELECTION
-        # ------------------------------------------------------------------
+        # -----------------------------------------------------
+        # 3. SYSTEM PROMPT BASED ON ROUTED INTENT
+        # -----------------------------------------------------
         if intent == "contract":
-            system_prompt = "You are LegalSathi, a global contract drafting expert."
+            system_prompt = "You are LegalSathi, a global contract drafting expert. Generate structured legal agreements as per detected jurisdiction."
+
         elif intent == "tax_reply":
-            system_prompt = "You are LegalSathi, a global tax notice reply expert."
+            system_prompt = "You are LegalSathi, a global tax notice reply expert. Generate clear, concise, structured replies for GST, VAT, IRS, HMRC, IT notices."
+
         elif intent == "notice_reply":
-            system_prompt = "You are LegalSathi, draft professional legal notices."
+            system_prompt = "You are LegalSathi, draft professional legal notices and replies."
+
         elif intent == "clause_review":
-            system_prompt = "You are LegalSathi, a clause rewriting expert."
+            system_prompt = "You are LegalSathi, a clause rewriting expert. Improve, polish, and legally strengthen clauses."
+
         elif intent == "document_summary":
-            system_prompt = "You are LegalSathi, summarize documents clearly."
+            system_prompt = "You are LegalSathi, summarize documents clearly with risks highlighted."
+
         elif intent == "lawyer_mode":
-            system_prompt = "You are LegalSathi-ADV, a senior legal analyst."
+            system_prompt = "You are LegalSathi-ADV, behaving like a senior lawyer. Provide deep legal reasoning, citations, and structured guidance."
+
         else:
             system_prompt = "You are LegalSathi, a global AI legal assistant."
 
-        # ------------------------------------------------------------------
-        # 4. MESSAGE HISTORY
-        # ------------------------------------------------------------------
-        message_history = ls_build_context(conv_id, limit=30)
+        # Branding only ONCE (first assistant message)
+        message_history = build_context(conv_id, max_messages=12)
+        is_first_reply = len(message_history) <= 1
+
         branding = ""
-        if len(message_history) <= 1:
+        if is_first_reply:
             branding = (
                 "I am **LegalSathi**, your global AI legal assistant. "
-                "I can draft agreements, notices, tax replies, and more.\n\n"
+                "I can draft agreements, notices, tax replies, and legal documents for any country.\n\n"
             )
 
-        # ------------------------------------------------------------------
-        # 5. PRE-GENERATED TEMPLATES (contract / tax_reply)
-        # ------------------------------------------------------------------
-        pre_template = None
+        # -----------------------------------------------------
+        # 4. PRE-GENERATE TEMPLATE IF CONTRACT or TAX ENGINE
+        # -----------------------------------------------------
+        pre_generated = None
+
         if intent == "contract":
-            pre_template = generate_contract(jurisdiction, message, style)
+            pre_generated = generate_contract(jurisdiction, message, style)
+
         elif intent == "tax_reply":
-            pre_template = generate_tax_reply(jurisdiction, message, style)
+            pre_generated = generate_tax_reply(jurisdiction, message, style)
 
-        # build final user prompt
-        if pre_template:
-            final_user_prompt = (
-                branding
-                + f"Here is a structured draft template:\n\n{pre_template}\n\n"
-                + f"Now refine it based on the user's request:\n{message}"
-            )
+        # Add branding + pre-generated structure to messages
+        user_message_payload = branding
+        if pre_generated:
+            user_message_payload += f"Here is the structured draft template:\n\n{pre_generated}\n\nNow refine the above draft based on the user's request:\n\n{message}"
         else:
-            final_user_prompt = branding + message
+            user_message_payload += message
 
-        # ------------------------------------------------------------------
-        # 6. RETRIEVAL AUGMENTATION (RAG)
-        # ------------------------------------------------------------------
-        rag_chunks = retrieve_relevant_chunks(message)
-        if rag_chunks:
-            rag_context = "\n\n".join([c["chunk_text"] for c in rag_chunks])
-        else:
-            rag_context = ""
-
-        # ------------------------------------------------------------------
-        # 7. BUILD FINAL MESSAGES FOR AI
-        # ------------------------------------------------------------------
+        # -----------------------------------------------------
+        # 5. BUILD AI MESSAGE LIST
+        # -----------------------------------------------------
         messages_for_ai = [{"role": "system", "content": system_prompt}]
-
-        # Add history
         messages_for_ai.extend(message_history)
+        messages_for_ai.append({"role": "user", "content": user_message_payload})
 
-        # Add RAG + user content
-        if rag_context:
-            messages_for_ai.append({
-                "role": "user",
-                "content": f"[Relevant context retrieved]\n{rag_context}\n\nUser said:\n{final_user_prompt}"
-            })
-        else:
-            messages_for_ai.append({"role": "user", "content": final_user_prompt})
+        messages_for_ai = trim_messages(messages_for_ai, max_chars=7500)
 
-        # ------------------------------------------------------------------
-        # 8. STREAMING RESPONSE
-        # ------------------------------------------------------------------
+        # -----------------------------------------------------
+        # 6. STREAMING RESPONSE GENERATOR
+        # -----------------------------------------------------
         def generate_stream():
             final_text = ""
 
+            # Stream from GROQ
             try:
                 for chunk in client.chat.completions.create(
                     model="llama-3.1-8b-instant",
                     messages=messages_for_ai,
                     stream=True
                 ):
-                    if chunk and chunk.choices and chunk.choices[0].delta.content:
+                    if (
+                        chunk
+                        and chunk.choices
+                        and hasattr(chunk.choices[0].delta, "content")
+                        and chunk.choices[0].delta.content
+                    ):
                         delta = chunk.choices[0].delta.content
                         final_text += delta
                         yield json.dumps({"chunk": delta}) + "\n"
-            except Exception as e:
-                print("Streaming failed:", e)
+
+            except Exception as stream_err:
+                print("Streaming failed:", stream_err)
                 yield json.dumps({"chunk": "\n[Streaming failed]\n"}) + "\n"
 
-            # Save message
+            # -----------------------------------------------------
+            # 7. SAVE ASSISTANT RESPONSE
+            # -----------------------------------------------------
             try:
-                db.messages.insert_one({
-                    "conv_id": ObjectId(conv_id),
-                    "role": "assistant",
-                    "content": final_text,
-                    "timestamp": time.time(),
-                })
-
-                db.conversations.update_one(
+                add_message(conv_id, "assistant", final_text)
+                db.get_collection("conversations").update_one(
                     {"_id": ObjectId(conv_id)},
                     {
                         "$set": {
                             "updated_at": time.time(),
-                            "title": final_text[:60] or "Conversation",
-                            "last_message": final_text,
+                            "title": (final_text[:60] or "Conversation"),
+                            "last_message": final_text
                         }
                     }
                 )
             except Exception as e:
-                print("Save error:", e)
+                print("Save assistant error:", e)
 
-            # Generate PDF + DOCX
+            # -----------------------------------------------------
+            # 8. GENERATE PDF + DOCX AFTER STREAM ENDS
+            # -----------------------------------------------------
             from pdf_utils import text_to_pdf
             pdf_name = f"{uuid.uuid4().hex}.pdf"
             pdf_path = text_to_pdf(final_text, pdf_name)
 
-            docx_name, buffer = generate_docx_stream(final_text)
-            DOCX_TEMP[docx_name] = buffer
+            # DOCX (in-memory)
+            docx_name, docx_buffer = generate_docx_stream(final_text)
 
+            # Save DOCX buffer to temp memory store
+            DOCX_TEMP[docx_name] = docx_buffer
+
+            # -----------------------------------------------------
+            # 9. FINAL SIGNAL
+            # -----------------------------------------------------
             yield json.dumps({
                 "done": True,
                 "conv_id": conv_id,
                 "pdf_url": f"/download/{pdf_name}",
-                "docx_url": f"/download_docx/{docx_name}",
+                "docx_url": f"/download_docx/{docx_name}"
             }) + "\n"
 
         return Response(stream_with_context(generate_stream()), mimetype="text/plain")
@@ -981,58 +949,6 @@ def get_conversation(conv_id):
     except Exception as e:
         print("get_conversation error:", e)
         return jsonify([])
-@app.route("/api/retrieve", methods=["GET"])
-def api_retrieve():
-    q = request.args.get("q", "")
-    top_k = int(request.args.get("k", 6))
-    if not q:
-        return jsonify([])
-    hits = []
-    try:
-        from embedding_utils import retrieve
-        hits = retrieve(db, q, top_k=top_k, index_name="global")
-    except Exception as e:
-        print("retrieve error", e)
-    return jsonify(hits)
-
-
-@app.route("/api/lawyer_mode", methods=["POST"])
-def api_lawyer_mode():
-    data = request.get_json(force=True)
-    user_id = data.get("user_id")
-    conv_id = data.get("conv_id")
-    question = data.get("question", "")
-    if not user_id or not question:
-        return jsonify({"error":"Missing fields"}), 400
-
-    # build local context + retrieval
-    context = build_context(conv_id, max_messages=20) if conv_id else []
-    try:
-        from embedding_utils import retrieve
-        top_chunks = retrieve(db, question, top_k=6, index_name="global")
-        retrieval_texts = "\n\n".join([c["chunk_text"] for c in top_chunks])
-    except Exception as e:
-        retrieval_texts = ""
-
-    prompt = (
-        "You are LegalSathi-ADV, a senior lawyer. You will provide deep legal research, "
-        "logical argumentation, and cite sources. Use the following excerpts as the primary source:\n\n"
-        f"{retrieval_texts}\n\nQuestion:\n{question}\n\nProvide: 1) Short answer, 2) Legal reasoning with citations (cite excerpt numbers), 3) Suggested next steps and documents to collect, 4) Drafted paragraph if needed."
-    )
-    answer = ask_ai(prompt, "\n".join([m["content"] for m in context]) + "\n\n" + question)
-    return jsonify({"answer": answer})
-
-
-@app.route("/api/embeddings/reindex", methods=["POST"])
-def api_reindex():
-    # restricted endpoint in production (auth)
-    try:
-        from embedding_utils import reindex_all_files
-        reindex_all_files(db, index_name="global")
-        return jsonify({"status":"ok"})
-    except Exception as e:
-        print("reindex error", e)
-        return jsonify({"error": "failed"}), 500
 
 @app.route("/api/files/<user_id>")
 def list_files(user_id):
@@ -1044,7 +960,6 @@ def list_files(user_id):
     except Exception as e:
         print("list_files error:", e)
         return jsonify([])
-    
 @app.route("/api/upload", methods=["POST"])
 def upload_file():
     """
