@@ -17,8 +17,6 @@ from legal_engine import (
     generate_contract, generate_tax_reply, generate_docx_stream,
     clause_review, precedent_search, make_jurisdiction_note
 )
-
-from db import db
 DOCX_TEMP = {}
 # AI SDK import (Groq)
 try:
@@ -1086,7 +1084,9 @@ def list_files(user_id):
     except Exception as e:
         print("list_files error:", e)
         return jsonify([])
- @app.route("/api/upload", methods=["POST"])
+    
+
+@app.route("/api/upload", methods=["POST"])
 def upload_file():
     try:
         user_id = request.form.get("user_id")
