@@ -7,3 +7,6 @@ reportlab
 pymupdf
 python-docx
 gunicorn
+numpy
+sentence-transformers
+faiss-cpu
