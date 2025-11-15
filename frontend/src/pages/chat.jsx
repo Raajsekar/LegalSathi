@@ -33,7 +33,8 @@ export default function Chat() {
   const [activeChat, setActiveChat] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [showGstPanel, setShowGstPanel] = useState(false);
-
+  const [excerpts, setExcerpts] = useState([]);
+const [showExcerpts, setShowExcerpts] = useState(false);
   // voice states
   const [listening, setListening] = useState(false);
   const [supportsSpeech, setSupportsSpeech] = useState(false);
@@ -131,6 +132,16 @@ export default function Chat() {
   }
 };
 
+  const fetchExcerpts = async (query) => {
+  try {
+    const res = await axios.get(`${API_BASE}/api/retrieve`, { params: { q: query, k: 6 } });
+    return res.data || [];
+  } catch (e) {
+    console.error("retrieve error", e);
+    return [];
+  }
+};
+
 
 
   // --- Utility: save chat entry locally and keep top-most ordering ---
@@ -150,6 +161,18 @@ export default function Chat() {
       return [entry, ...prev];
     });
   };
+ 
+
+  const callLawyerMode = async () => {
+  const res = await axios.post(`${API_BASE}/api/lawyer_mode`, {
+    user_id: user.uid,
+    conv_id: activeChat?._id || null,
+    question: message
+  });
+  const ans = res.data.answer;
+  // show on UI or append to conversation
+  // append to active chat
+};
 
   // --- STOP GENERATING (abort current request) ---
   const stopGenerating = () => {
@@ -777,6 +800,33 @@ const loadConversation = async (conv) => {
     </div>
   ))}
 
+  
+<button onClick={async () => {
+   const q = message || (activeChat?.messages?.slice(-1)[0]?.content || "");
+   const hits = await fetchExcerpts(q);
+   setExcerpts(hits);
+   setShowExcerpts(true);
+}}>Show relevant excerpts</button>
+
+{showExcerpts && (
+  <div className="excerpts-drawer">
+    <button onClick={() => setShowExcerpts(false)}>Close</button>
+    <div>
+      {excerpts.map((e, i) => (
+         <div key={i} className="excerpt-card">
+           <div className="excerpt-meta">Excerpt {i+1} — {e.filename}</div>
+           <div className="excerpt-text">{e.chunk_text}</div>
+           <button onClick={() => {
+              // insert excerpt into composer
+              setMessage((m) => (m ? m + "\n\n" : "") + `SOURCE_EXCERPT_${i+1}:\n${e.chunk_text}`);
+              setShowExcerpts(false);
+           }}>Insert excerpt into prompt</button>
+         </div>
+      ))}
+    </div>
+  </div>
+)}
+
               {activeChat.messages && activeChat.messages.length > 0 && (
   <div className="flex items-center gap-3 mt-3">
     {activeChat.pdf_url && (
@@ -842,7 +892,13 @@ const loadConversation = async (conv) => {
 
             <div className="flex-1 relative textarea-wrapper">
               <textarea
-                value={message.replace(/¶INTERIM:.*$/, "")}
+  value={message.replace(/¶INTERIM:.*$/, "")}
+  onKeyDown={(e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (!loading) sendMessage();
+    }
+  }}
                 onChange={(e) => setMessage(e.target.value)}
                 placeholder={task === "contract" ? "Describe the contract you want (parties, duration, rent, deposit, special clauses)..." : "Type your question or paste text here..."}
                 className="composer-textarea"

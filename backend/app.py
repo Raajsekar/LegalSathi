@@ -897,11 +897,25 @@ def stream_chat():
         # -----------------------------------------------------
         # 5. BUILD AI MESSAGE LIST
         # -----------------------------------------------------
-        messages_for_ai = [{"role": "system", "content": system_prompt}]
-        messages_for_ai.extend(message_history)
-        messages_for_ai.append({"role": "user", "content": user_message_payload})
+        
+        # retrieve top relevant chunks from embeddings based on current user message
+        try:
+           from embedding_utils import retrieve
+           top_chunks = retrieve(db, message, top_k=5, index_name="global")
+        except Exception as e:
+           top_chunks = []
 
-        messages_for_ai = trim_messages(messages_for_ai, max_chars=7500)
+        # Build a retrieval prompt (pinned system message)
+        if top_chunks:
+              retrieval_texts = "\n\n".join([f"Excerpt {i+1} (file: {c['filename']}):\n{c['chunk_text'][:2000]}" for i, c in enumerate(top_chunks)])
+              retrieval_system = (
+        "Use ONLY the following document excerpts when answering the user's question. "
+        "Cite the excerpt number(s) when referencing the document. Do not invent facts outside these excerpts.\n\n"
+        + retrieval_texts
+    )
+              
+              messages_for_ai.insert(1, {"role": "system", "content": retrieval_system})
+              messages_for_ai = trim_messages(messages_for_ai, max_chars=7500)
 
         # -----------------------------------------------------
         # 6. STREAMING RESPONSE GENERATOR
@@ -1009,6 +1023,58 @@ def get_conversation(conv_id):
     except Exception as e:
         print("get_conversation error:", e)
         return jsonify([])
+@app.route("/api/retrieve", methods=["GET"])
+def api_retrieve():
+    q = request.args.get("q", "")
+    top_k = int(request.args.get("k", 6))
+    if not q:
+        return jsonify([])
+    hits = []
+    try:
+        from embedding_utils import retrieve
+        hits = retrieve(db, q, top_k=top_k, index_name="global")
+    except Exception as e:
+        print("retrieve error", e)
+    return jsonify(hits)
+
+
+@app.route("/api/lawyer_mode", methods=["POST"])
+def api_lawyer_mode():
+    data = request.get_json(force=True)
+    user_id = data.get("user_id")
+    conv_id = data.get("conv_id")
+    question = data.get("question", "")
+    if not user_id or not question:
+        return jsonify({"error":"Missing fields"}), 400
+
+    # build local context + retrieval
+    context = build_context(conv_id, max_messages=20) if conv_id else []
+    try:
+        from embedding_utils import retrieve
+        top_chunks = retrieve(db, question, top_k=6, index_name="global")
+        retrieval_texts = "\n\n".join([c["chunk_text"] for c in top_chunks])
+    except Exception as e:
+        retrieval_texts = ""
+
+    prompt = (
+        "You are LegalSathi-ADV, a senior lawyer. You will provide deep legal research, "
+        "logical argumentation, and cite sources. Use the following excerpts as the primary source:\n\n"
+        f"{retrieval_texts}\n\nQuestion:\n{question}\n\nProvide: 1) Short answer, 2) Legal reasoning with citations (cite excerpt numbers), 3) Suggested next steps and documents to collect, 4) Drafted paragraph if needed."
+    )
+    answer = ask_ai(prompt, "\n".join([m["content"] for m in context]) + "\n\n" + question)
+    return jsonify({"answer": answer})
+
+
+@app.route("/api/embeddings/reindex", methods=["POST"])
+def api_reindex():
+    # restricted endpoint in production (auth)
+    try:
+        from embedding_utils import reindex_all_files
+        reindex_all_files(db, index_name="global")
+        return jsonify({"status":"ok"})
+    except Exception as e:
+        print("reindex error", e)
+        return jsonify({"error": "failed"}), 500
 
 @app.route("/api/files/<user_id>")
 def list_files(user_id):
@@ -1020,30 +1086,22 @@ def list_files(user_id):
     except Exception as e:
         print("list_files error:", e)
         return jsonify([])
-@app.route("/api/upload", methods=["POST"])
+ @app.route("/api/upload", methods=["POST"])
 def upload_file():
-    """
-    ChatGPT-style upload:
-    - Does NOT create a new conversation unless conv_id is missing
-    - Stores extracted document text as a hidden assistant message
-    - Allows MULTI-TURN chat with the file
-    - Lets users ask followup questions about the PDF
-    """
     try:
         user_id = request.form.get("user_id")
-        conv_id = request.form.get("conv_id")  # new: continue same chat
+        conv_id = request.form.get("conv_id") or None
         task = request.form.get("task", "summarize")
         file = request.files.get("file")
 
         if not user_id or not file:
             return jsonify({"error": "Missing fields"}), 400
 
-        # ---- Save actual uploaded file ----
         filename = f"{uuid.uuid4().hex}_{file.filename}"
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         file.save(filepath)
 
-        # ---- Extract text from uploaded doc ----
+        # extract text
         lower = filename.lower()
         if lower.endswith(".pdf"):
             content = extract_pdf_text(filepath)
@@ -1054,7 +1112,7 @@ def upload_file():
         else:
             return jsonify({"error": "Unsupported file type"}), 400
 
-        # ---- Create conversation if needed ----
+        # ensure conversation exists (if conv_id not provided)
         if not conv_id or not is_valid_objectid(conv_id):
             conv = {
                 "user_id": user_id,
@@ -1066,16 +1124,35 @@ def upload_file():
             conv_res = db.get_collection("conversations").insert_one(conv)
             conv_id = str(conv_res.inserted_id)
 
-        # ---- (KEY FEATURE) Insert the file content as a hidden system message ----
-        # This is how ChatGPT allows follow-up questions about the file.
+        # Index document chunks (FAISS + Mongo)
+        try:
+            # create a file_record first (so file_record_id is available)
+            file_record = {
+                "user_id": user_id,
+                "original_name": file.filename,
+                "stored_path": filepath,
+                "pdf": None,
+                "conv_id": ObjectId(conv_id),
+                "timestamp": time.time()
+            }
+            file_res = db.get_collection("file_records").insert_one(file_record)
+            file_record_id = file_res.inserted_id
+
+            # index chunks into FAISS and store entries in 'embeddings' collection
+            from embedding_utils import index_document
+            metas = index_document(db, ObjectId(conv_id), file_record_id, file.filename, content, user_id, index_name="global")
+        except Exception as e:
+            print("embedding/index error:", e)
+
+        # Insert hidden system message with special marker (keeps legacy behaviour)
         db.get_collection("messages").insert_one({
             "conv_id": ObjectId(conv_id),
             "role": "system",
-            "content": f"__FILE_CONTENT__\n{content}",
+            "content": f"__FILE_CONTENT__\n{content[:200000]}",  # limit stored length if enormous
             "timestamp": time.time()
         })
 
-        # ---- Save user message indicating upload ----
+        # Save a user message to indicate upload
         db.get_collection("messages").insert_one({
             "conv_id": ObjectId(conv_id),
             "role": "user",
@@ -1083,15 +1160,13 @@ def upload_file():
             "timestamp": time.time()
         })
 
-        # ---- Generate AI summary (first response) ----
+        # Generate initial summary
         summary_prompt = (
-            "You are LegalSathi. The user uploaded a document. "
-            "Provide a clear high-level summary. "
-            "DO NOT lose the document content — future prompts will reference it."
+            "You are LegalSathi. The user uploaded a document. Provide a high-level summary and list the most important sections and pages."
         )
         reply = ask_ai(summary_prompt, content[:8000])
 
-        # ---- Save assistant reply ----
+        # Save assistant reply
         db.get_collection("messages").insert_one({
             "conv_id": ObjectId(conv_id),
             "role": "assistant",
@@ -1099,25 +1174,18 @@ def upload_file():
             "timestamp": time.time()
         })
 
-        # ---- Update conversation metadata ----
-        db.get_collection("conversations").update_one(
-            {"_id": ObjectId(conv_id)},
-            {"$set": {"updated_at": time.time(), "last_message": reply}}
-        )
-
-        # ---- Generate summary PDF ----
+        # generate small pdf summary
         pdfname = f"{uuid.uuid4().hex[:8]}.pdf"
         text_to_pdf(reply, pdfname)
 
-        # ---- Also save file record ----
-        db.get_collection("file_records").insert_one({
-            "user_id": user_id,
-            "original_name": file.filename,
-            "stored_path": filepath,
-            "pdf": pdfname,
-            "conv_id": ObjectId(conv_id),
-            "timestamp": time.time()
-        })
+        # update file_record with pdf name
+        db.get_collection("file_records").update_one({"_id": file_record_id}, {"$set": {"pdf": pdfname}})
+
+        # update conversation metadata
+        db.get_collection("conversations").update_one(
+            {"_id": ObjectId(conv_id)},
+            {"$set": {"updated_at": time.time(), "last_message": reply, "title": file.filename}}
+        )
 
         return jsonify({
             "reply": reply,
