@@ -487,64 +487,84 @@ setActiveChat((prev) => {
   };
 
   // --- FILE UPLOAD (summarize / explain) ---
-  const handleUpload = async () => {
-  if (!file) return alert("Please select a file first.");
-  setLoading(true);
+  const handleUpload = async (e) => {
 
-  const fd = new FormData();
-  fd.append("user_id", user.uid);
-  fd.append("task", task);
-  fd.append("file", file);
-  fd.append("conv_id", activeChat?._id || "");
+  const file = e.target.files[0];
+  if (!file) return;
 
+  setUploading(true);
 
   try {
-    const res = await axios.post(`${API_BASE}/api/upload`, fd, {
-      headers: { "Content-Type": "multipart/form-data" },
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("user_id", user.uid);
+
+    formData.append("conv_id", activeChat?._id || "");
+
+    const res = await fetch(`${API_BASE}/api/upload`, {
+      method: "POST",
+      body: formData,
     });
 
-    const aiReply = res.data.reply || "";
-    
-    // ✅ ALWAYS use a NEW conversation for file uploads
-    // REMOVE → const convId = res.data.conv_id || res.data._id || activeChat?._id || `local-${Date.now()}`;
-    // ADD →
-   const convId = res.data.conv_id;
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || "Upload failed");
+      return;
+    }
 
+    const convId = data.conv_id;
 
-    const pdf_url = res.data.pdf_url || null;
+    // ---- Update chats array without triggering summary ----
+    setChats((prev) => {
+  const updated = prev.map((c) => {
+    if (c._id !== convId) return c;
 
-    // ❗ FILE UPLOAD SHOULD NOT APPEND INTO ACTIVE CHAT
-    // REMOVE → uses activeChat?.messages
-    // ADD → fresh messages array
-    const updatedMessages = [
-      { role: "user", content: `📄 ${file.name}` },
-      { role: "assistant", content: aiReply },
-    ];
-
-    // 🚀 Chat entry with TITLE = file name
-    const finalEntry = {
-      _id: convId,
-      title: file.name,           // <-- ALWAYS use filename as title
-      last_message: aiReply,
-      pdf_url,
-      messages: updatedMessages,
-      timestamp: Date.now() / 1000,
+    return {
+      ...c,
+      messages: [
+        ...(c.messages || []),
+        { role: "user", content: `📄 Uploaded file: ${file.name}` },
+      ],
+      last_message: `📄 Uploaded file: ${file.name}`,
     };
+  });
 
-    // Insert at top of chats list
-    setChats((prev) => [finalEntry, ...prev]);
+  const newActive = updated.find((c) => c._id === convId);
+  if (newActive) setActiveChat(newActive);
 
-    // Set active chat to the new one
-    setActiveChat(finalEntry);
+  return updated;
+});
 
-    setFile(null);
-    setFileName("");
-  } catch (e) {
-    console.error("Upload error", e);
-    alert("Upload failed — ensure PDF/DOCX/TXT and try again.");
-  } finally {
-    setLoading(false);
+
+    // ---- Update activeChat same way ----
+    setActiveChat((prev) => {
+      if (!prev || prev._id !== convId) return prev;
+
+      return {
+        ...prev,
+        messages: [
+          ...prev.messages,
+          {
+            role: "user",
+            content: `📄 Uploaded file: ${file.name}`,
+          },
+        ],
+        last_message: `📄 Uploaded file: ${file.name}`,
+      };
+    });
+
+    // ---- If this was a new chat, select it ----
+    if (!activeChat || activeChat._id !== convId) {
+      const found = chats.find((c) => c._id === convId);
+      if (found) setActiveChat(found);
+    }
+
+  } catch (err) {
+    console.error("UPLOAD ERROR:", err);
+    alert("Upload error");
   }
+
+  setUploading(false);
 };
 
 
@@ -885,7 +905,11 @@ const loadConversation = async (conv) => {
         {/* composer */}
         <footer className="p-4 border-t border-gray-800 bg-[#0f1012]">
           <div className="max-w-6xl mx-auto flex items-center gap-3 composer-row">
-            <input id="file-input" type="file" accept=".pdf,.docx,.txt" onChange={onFileChange} className="hidden" />
+            <input id="file-input" type="file" accept=".pdf,.docx,.txt" onChange={(e) => {
+  onFileChange(e);   // keep your original behavior
+  handleUpload(e);   // actually upload the file
+}}
+ className="hidden" />
             <label htmlFor="file-input" className="cursor-pointer px-3 py-2 bg-[#121214] border border-gray-700 rounded flex items-center gap-2 text-sm">
               <Upload size={14} /> {fileName ? fileName : "Choose file"}
             </label>
@@ -922,7 +946,15 @@ const loadConversation = async (conv) => {
             </div>
 
             <div className="flex flex-col gap-2">
-              <button onClick={() => (file ? handleUpload() : sendMessage())} disabled={loading} className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded text-sm">
+              <button
+  onClick={() => {
+    if (file) {
+      document.getElementById("file-input").dispatchEvent(new Event("change", { bubbles: true }));
+    } else {
+      sendMessage();
+    }
+  }}
+ disabled={loading} className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded text-sm">
                 {loading ? "Processing..." : file ? (task === "summarize" ? "Summarize" : task === "contract" ? "Draft" : "Explain") : "Send"}
               </button>
 

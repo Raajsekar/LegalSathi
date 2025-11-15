@@ -1087,23 +1087,26 @@ def list_files(user_id):
         print("list_files error:", e)
         return jsonify([])
     
-
 @app.route("/api/upload", methods=["POST"])
 def upload_file():
     try:
         user_id = request.form.get("user_id")
         conv_id = request.form.get("conv_id") or None
-        task = request.form.get("task", "summarize")
         file = request.files.get("file")
 
         if not user_id or not file:
             return jsonify({"error": "Missing fields"}), 400
 
+        # -----------------------------
+        # Save file
+        # -----------------------------
         filename = f"{uuid.uuid4().hex}_{file.filename}"
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         file.save(filepath)
 
-        # extract text
+        # -----------------------------
+        # Extract text
+        # -----------------------------
         lower = filename.lower()
         if lower.endswith(".pdf"):
             content = extract_pdf_text(filepath)
@@ -1114,7 +1117,9 @@ def upload_file():
         else:
             return jsonify({"error": "Unsupported file type"}), 400
 
-        # ensure conversation exists (if conv_id not provided)
+        # -----------------------------
+        # Ensure conversation exists
+        # -----------------------------
         if not conv_id or not is_valid_objectid(conv_id):
             conv = {
                 "user_id": user_id,
@@ -1126,9 +1131,21 @@ def upload_file():
             conv_res = db.get_collection("conversations").insert_one(conv)
             conv_id = str(conv_res.inserted_id)
 
-        # Index document chunks (FAISS + Mongo)
+        # -----------------------------
+        # Store hidden system document message
+        # -----------------------------
+        db.get_collection("messages").insert_one({
+            "conv_id": ObjectId(conv_id),
+            "role": "system",
+            "content": f"__FILE_CONTENT__\n{content[:200000]}",
+            "timestamp": time.time()
+        })
+
+        # -----------------------------
+        # RAG indexing (MongoDB version)
+        # -----------------------------
         try:
-            # create a file_record first (so file_record_id is available)
+            from embedding_utils import index_document
             file_record = {
                 "user_id": user_id,
                 "original_name": file.filename,
@@ -1140,22 +1157,21 @@ def upload_file():
             file_res = db.get_collection("file_records").insert_one(file_record)
             file_record_id = file_res.inserted_id
 
-            # index chunks into FAISS and store entries in 'embeddings' collection
-            # embeddings disabled for now
-            metas = []
-
+            index_document(
+                db=db,
+                conv_id=ObjectId(conv_id),
+                file_record_id=file_record_id,
+                filename=file.filename,
+                text=content,
+                user_id=user_id,
+                index_name="vector_index"
+            )
         except Exception as e:
             print("embedding/index error:", e)
 
-        # Insert hidden system message with special marker (keeps legacy behaviour)
-        db.get_collection("messages").insert_one({
-            "conv_id": ObjectId(conv_id),
-            "role": "system",
-            "content": f"__FILE_CONTENT__\n{content[:200000]}",  # limit stored length if enormous
-            "timestamp": time.time()
-        })
-
-        # Save a user message to indicate upload
+        # -----------------------------
+        # Add a simple user-visible message
+        # -----------------------------
         db.get_collection("messages").insert_one({
             "conv_id": ObjectId(conv_id),
             "role": "user",
@@ -1163,37 +1179,27 @@ def upload_file():
             "timestamp": time.time()
         })
 
-        # Generate initial summary
-        summary_prompt = (
-            "You are LegalSathi. The user uploaded a document. Provide a high-level summary and list the most important sections and pages."
-        )
-        reply = ask_ai(summary_prompt, content[:8000])
-
-        # Save assistant reply
-        db.get_collection("messages").insert_one({
-            "conv_id": ObjectId(conv_id),
-            "role": "assistant",
-            "content": reply,
-            "timestamp": time.time()
-        })
-
-        # generate small pdf summary
-        pdfname = f"{uuid.uuid4().hex[:8]}.pdf"
-        text_to_pdf(reply, pdfname)
-
-        # update file_record with pdf name
-        db.get_collection("file_records").update_one({"_id": file_record_id}, {"$set": {"pdf": pdfname}})
-
-        # update conversation metadata
+        # -----------------------------
+        # Update conversation metadata
+        # -----------------------------
         db.get_collection("conversations").update_one(
             {"_id": ObjectId(conv_id)},
-            {"$set": {"updated_at": time.time(), "last_message": reply, "title": file.filename}}
+            {
+                "$set": {
+                    "updated_at": time.time(),
+                    "title": file.filename,
+                    "last_message": f"📄 Uploaded {file.filename}"
+                }
+            }
         )
 
+        # -----------------------------
+        # Return only conv_id — NO SUMMARY
+        # -----------------------------
         return jsonify({
-            "reply": reply,
-            "pdf_url": f"/download/{pdfname}",
-            "conv_id": str(conv_id)
+            "status": "ok",
+            "conv_id": conv_id,
+            "message": f"Uploaded {file.filename}"
         })
 
     except Exception as e:
