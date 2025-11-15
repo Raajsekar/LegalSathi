@@ -1,27 +1,25 @@
-# embedding_utils.py
+# backend/embedding_utils.py
 """
 Groq-only embedding utilities for LegalSathi.
 
-Features:
-- Chunk plain text into overlapping chunks.
-- Generate embeddings via Groq (requires GROQ_API_KEY env var).
-- Store chunk metadata and normalized embeddings in MongoDB collection "embeddings".
-- Retrieve top-k relevant chunks by computing cosine similarity in Python (no faiss/torch).
-- Lightweight: no numpy, no sentence-transformers, no faiss.
+- No torch / no faiss / no sentence-transformers.
+- Uses Groq embeddings API, stores normalized embeddings in MongoDB.
+- Retrieval computes cosine similarity in pure Python.
 
-Usage:
-- index_document(db, conv_id, file_record_id, filename, text, user_id, index_name="global")
-- retrieve(db, query, top_k=6, index_name="global")
-- reindex_all_files(db, index_name="global")  # optional helper
+Functions:
+  - index_document(db, conv_id, file_record_id, filename, text, user_id, index_name="global")
+  - retrieve(db, query, top_k=6, index_name="global")
+  - delete_index_for_file(db, file_record_id, index_name="global")
+  - reindex_all_files(db, index_name="global")
 """
 
 import os
 import math
 import uuid
 import time
-from typing import List, Dict
+from typing import List
 
-# Groq client (lightweight)
+# Groq client
 try:
     from groq import Groq
 except Exception:
@@ -33,7 +31,9 @@ if Groq is not None and GROQ_API_KEY:
 else:
     groq_client = None
 
-# Simple text chunker
+# -----------------------
+# Text chunker
+# -----------------------
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
     if not text:
         return []
@@ -50,7 +50,9 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[st
             start = 0
     return [c for c in chunks if c]
 
-# Normalization helpers (pure python)
+# -----------------------
+# Vector helpers (pure python)
+# -----------------------
 def l2_norm(vec: List[float]) -> float:
     s = 0.0
     for v in vec:
@@ -70,70 +72,45 @@ def dot(a: List[float], b: List[float]) -> float:
         total += a[i] * b[i]
     return total
 
-# Groq embedding call
+# -----------------------
+# Groq embedding call (adapt if your SDK is different)
+# -----------------------
 def embed_text_groq(text: str) -> List[float]:
-    """
-    Returns embedding (list of floats) for given text using Groq.
-    Raises RuntimeError if groq_client is not configured.
-    """
     if groq_client is None:
         raise RuntimeError("Groq client not configured. Set GROQ_API_KEY and install groq package.")
-
-    # Use a compact prompt for embedding if API requires it; the Groq python SDK typically
-    # exposes an embeddings API. If your Groq SDK has a different method, adapt here.
-    # We'll try common shapes: client.embeddings.create or client.embeddings.embed
+    # Try several possible SDK shapes (some groq SDKs expose different methods)
     try:
-        # Try common API shape
         if hasattr(groq_client, "embeddings") and hasattr(groq_client.embeddings, "create"):
             res = groq_client.embeddings.create(model="embed-english-v1", input=text)
-            emb = res.data[0].embedding if hasattr(res.data[0], "embedding") else res.data[0]
+            # res.data[0].embedding or res.data[0]
+            first = res.data[0]
+            emb = getattr(first, "embedding", first)
             return list(emb)
         elif hasattr(groq_client, "embeddings") and hasattr(groq_client.embeddings, "embed"):
             res = groq_client.embeddings.embed(model="embed-english-v1", input=text)
             return list(res)
         elif hasattr(groq_client, "embed"):
-            # fallback
             return list(groq_client.embed(text))
         else:
-            # generic chat completions fallback (unlikely)
-            raise RuntimeError("Groq client doesn't expose recognized embeddings API. Check SDK version.")
+            raise RuntimeError("Groq client does not expose a recognized embeddings API. Check SDK.")
     except Exception as e:
-        # bubble up with context
         raise RuntimeError(f"Groq embedding error: {e}")
 
-# Index a single document text into DB (chunks + embeddings)
+# -----------------------
+# Indexing and retrieval
+# -----------------------
 def index_document(db, conv_id, file_record_id, filename, text, user_id, index_name="global", chunk_size=1000, overlap=200):
-    """
-    Splits text into chunks, computes embeddings with Groq, stores into 'embeddings' collection.
-    Each document stored:
-      {
-        "_id": "<uuid>",
-        "index": index_name,
-        "conv_id": ObjectId or string,
-        "file_record_id": ObjectId or string,
-        "filename": filename,
-        "user_id": user_id,
-        "chunk_text": "...",
-        "chunk_index": 0,
-        "embedding": [...],      # normalized embedding list
-        "created_at": timestamp
-      }
-    """
-    # chunk
     chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
     if not chunks:
         return {"status": "empty", "count": 0}
 
     coll = db.get_collection("embeddings")
-
     inserted = 0
     for i, c in enumerate(chunks):
-        # generate embedding
         try:
             emb = embed_text_groq(c)
             emb_norm = normalize(emb)
         except Exception as e:
-            # if embedding fails, skip this chunk but log
             print("embed_text_groq error:", e)
             continue
 
@@ -158,23 +135,11 @@ def index_document(db, conv_id, file_record_id, filename, text, user_id, index_n
 
     return {"status": "ok", "count": inserted}
 
-# Retrieve top-k relevant chunks for query
 def retrieve(db, query: str, top_k: int = 6, index_name: str = "global"):
-    """
-    1) Embed the query with Groq
-    2) Fetch candidate chunks from DB (same index_name)
-    3) Compute cosine similarity (dot of normalized vectors)
-    4) Return top_k hits sorted by score
-
-    WARNING: This implementation fetches all rows for the index and computes similarity in Python.
-    If your embeddings collection grows very large, add pre-filtering (by user_id, conv_id, or use MongoDB Atlas Vector Search).
-    """
     if not query or not query.strip():
         return []
 
     coll = db.get_collection("embeddings")
-
-    # compute query embedding
     try:
         q_emb = embed_text_groq(query)
         q_emb_norm = normalize(q_emb)
@@ -182,9 +147,7 @@ def retrieve(db, query: str, top_k: int = 6, index_name: str = "global"):
         print("retrieve embed error:", e)
         return []
 
-    # fetch candidates - a simple strategy: recent N per index
     try:
-        # fetch reasonable limit (e.g., 2000 most recent). Adjust as needed.
         cursor = coll.find({"index": index_name}).sort("created_at", -1).limit(2000)
         candidates = list(cursor)
     except Exception as e:
@@ -197,16 +160,13 @@ def retrieve(db, query: str, top_k: int = 6, index_name: str = "global"):
         if not emb:
             continue
         try:
-            score = dot(q_emb_norm, emb)  # dot of normalized vectors = cosine similarity
+            score = dot(q_emb_norm, emb)
         except Exception:
-            # mismatched length - compute min-length dot
             score = dot(q_emb_norm, emb)
         hits.append((score, c))
 
-    # sort descending by score
     hits.sort(key=lambda x: x[0], reverse=True)
 
-    # return top_k mapped to user-friendly dicts
     out = []
     for score, c in hits[:top_k]:
         out.append({
@@ -220,7 +180,6 @@ def retrieve(db, query: str, top_k: int = 6, index_name: str = "global"):
 
     return out
 
-# Optional: remove index entries for a file or reindex
 def delete_index_for_file(db, file_record_id, index_name="global"):
     coll = db.get_collection("embeddings")
     try:
@@ -231,12 +190,6 @@ def delete_index_for_file(db, file_record_id, index_name="global"):
         return {"error": str(e)}
 
 def reindex_all_files(db, index_name="global"):
-    """
-    Helper utility to reindex all file_records collection entries.
-    This expects 'file_records' collection to have:
-      { "_id": ObjectId, "stored_path": "/path/to/file", "original_name": "...", "conv_id": ObjectId, "user_id": "..." }
-    Use with caution on large datasets (rate-limit).
-    """
     try:
         files = list(db.get_collection("file_records").find({}))
     except Exception as e:
@@ -250,12 +203,9 @@ def reindex_all_files(db, index_name="global"):
             results["skipped"] += 1
             continue
         try:
-            # read file - plain text or pdf/docx extraction not included here
-            # For best results, keep the same extractor you use in app.upload_file (extract_pdf_text/extract_docx_text)
             content = ""
             if path.lower().endswith(".pdf"):
                 try:
-                    # lazy import to avoid heavy deps at module import time
                     import fitz
                     with fitz.open(path) as pdf:
                         content = "\n".join([p.get_text("text") for p in pdf])
