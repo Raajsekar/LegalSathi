@@ -12,6 +12,13 @@ from bson.objectid import ObjectId
 from flask import stream_with_context
 import json
 import time
+from legal_engine import (
+    detect_legal_intent, detect_jurisdiction, detect_writing_style,
+    generate_contract, generate_tax_reply, generate_docx_stream,
+    clause_review, precedent_search, make_jurisdiction_note
+)
+
+from db import db
 DOCX_TEMP = {}
 # AI SDK import (Groq)
 try:
@@ -115,6 +122,8 @@ def calculate_gst(amount: float, rate_percent: float, inclusive=False, interstat
         "inclusive": inclusive,
         "interstate": interstate,
     }
+
+
 def trim_messages(messages, max_chars=8000):
     """
     Ensure the message history does not exceed max_chars.
@@ -139,6 +148,34 @@ def trim_messages(messages, max_chars=8000):
 
     # restore chronological order
     return list(reversed(trimmed))
+
+
+# -------------------------------
+# CHATGPT-STYLE CONVERSATION BUILDER
+# -------------------------------
+def ls_build_context(conv_id, limit=30):
+    """
+    Loads messages in correct chronological order.
+    Includes document system messages.
+    """
+    msgs = list(
+        db.get_collection("messages")
+        .find({"conv_id": ObjectId(conv_id)})
+        .sort("timestamp", 1)
+    )
+
+    formatted = []
+    for m in msgs:
+        formatted.append({
+            "role": m["role"],
+            "content": m["content"]
+        })
+
+    # keep only last X messages (ChatGPT behaviour)
+    if len(formatted) > limit:
+        formatted = formatted[-limit:]
+
+    return formatted
 
 # --- AI helper ---
 def ask_ai(context, prompt):
@@ -387,6 +424,31 @@ def detect_legal_intent(message: str):
     # Default
     return "generic_chat"
 
+# conversation_builder.py
+
+def build_conversation(conv_id, new_user_message):
+    """
+    Builds a ChatGPT-style conversation history.
+    System messages (document contents) are included.
+    """
+    messages_col = db.get_collection("messages")
+
+    # fetch all messages in this conversation
+    msgs = list(messages_col.find({"conv_id": ObjectId(conv_id)}).sort("timestamp", 1))
+
+    formatted = []
+
+    for m in msgs:
+        role = m["role"]  # system, user, assistant
+        content = m["content"]
+
+        # pass as-is
+        formatted.append({"role": role, "content": content})
+
+    # finally append the NEW user message
+    formatted.append({"role": "user", "content": new_user_message})
+
+    return formatted
 
 def generate_contract(jurisdiction, message, style="simple"):
     """
@@ -691,6 +753,22 @@ def api_gst_tips():
 def home():
     return "⚖️ LegalSathi backend active"
 
+@app.route("/api/clause_review", methods=["POST"])
+def api_clause_review():
+    data = request.get_json(force=True)
+    clause = data.get("clause", "")
+    if not clause:
+        return jsonify({"error": "Missing clause"}), 400
+    res = clause_review(clause)
+    return jsonify(res)
+
+@app.route("/api/precedent_search", methods=["GET"])
+def api_precedent_search():
+    user_id = request.args.get("user_id")
+    q = request.args.get("q", "")
+    hits = precedent_search(user_id, q, limit=8)
+    return jsonify(hits)
+
 
 @app.route("/download_docx/<filename>")
 def download_docx(filename):
@@ -787,7 +865,8 @@ def stream_chat():
             system_prompt = "You are LegalSathi, a global AI legal assistant."
 
         # Branding only ONCE (first assistant message)
-        message_history = build_context(conv_id, max_messages=12)
+        message_history = ls_build_context(conv_id, limit=30)
+
         is_first_reply = len(message_history) <= 1
 
         branding = ""
@@ -855,7 +934,14 @@ def stream_chat():
             # 7. SAVE ASSISTANT RESPONSE
             # -----------------------------------------------------
             try:
-                add_message(conv_id, "assistant", final_text)
+                # ChatGPT-style safe write: no overwrite, no merge issues
+                db.get_collection("messages").insert_one({
+    "conv_id": ObjectId(conv_id),
+    "role": "assistant",
+    "content": final_text,
+    "timestamp": time.time()
+})
+
                 db.get_collection("conversations").update_one(
                     {"_id": ObjectId(conv_id)},
                     {

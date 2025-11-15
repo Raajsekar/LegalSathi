@@ -244,47 +244,63 @@ accumulated += obj.chunk;
 
 // update chats array immutably: keep previous user messages and
 // keep one growing assistant message at the end (replace last assistant)
-setChats((prev) => {
-  return prev.map((c) => {
+setChats(prev =>
+  prev.map(c => {
     if (c._id !== optimisticEntry._id) return c;
 
     const prevMsgs = c.messages || [];
+    let newMsgs = [...prevMsgs];
 
-    // remove the last assistant partial (if any) so we can append updated assistant text
-    const withoutLastAssistant = prevMsgs.slice().filter((m, idx, arr) => {
-      // leave only non-assistant messages, but keep assistant messages except the last one
-      // We will append the current assistant partial at the end.
-      return m.role !== "assistant";
-    });
-
-    const newMsgs = withoutLastAssistant.concat({ role: "assistant", content: accumulated });
+    // If last assistant → update it
+    if (newMsgs.length && newMsgs[newMsgs.length - 1].role === "assistant") {
+      newMsgs[newMsgs.length - 1] = {
+        role: "assistant",
+        content: accumulated
+      };
+    } else {
+      // Otherwise push a new assistant partial
+      newMsgs.push({
+        role: "assistant",
+        content: accumulated
+      });
+    }
 
     return {
       ...c,
-      reply: accumulated,
       messages: newMsgs,
-      last_message: accumulated,
+      reply: accumulated,
+      last_message: accumulated
     };
-  });
-});
+  })
+);
 
 // update activeChat similarly (if it is the one we are streaming into)
-setActiveChat((prev) => {
-  if (!prev) return prev;
-  if (prev._id !== optimisticEntry._id) return prev;
+setActiveChat(prev => {
+  if (!prev || prev._id !== optimisticEntry._id) return prev;
 
   const prevMsgs = prev.messages || [];
-  const withoutLastAssistant = prevMsgs.slice(0, -1);
+  let newMsgs = [...prevMsgs];
 
-  const newMsgs = withoutLastAssistant.concat({ role: "assistant", content: accumulated });
+  if (newMsgs.length && newMsgs[newMsgs.length - 1].role === "assistant") {
+    newMsgs[newMsgs.length - 1] = {
+      role: "assistant",
+      content: accumulated
+    };
+  } else {
+    newMsgs.push({
+      role: "assistant",
+      content: accumulated
+    });
+  }
 
   return {
     ...prev,
-    reply: accumulated,
     messages: newMsgs,
-    last_message: accumulated,
+    reply: accumulated,
+    last_message: accumulated
   };
 });
+
 
 }
  
